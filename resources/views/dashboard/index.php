@@ -1,0 +1,5 @@
+<?php ob_start(); ?>
+<h1>Dashboard</h1><p class="muted">Jura AV Monitor is the built-in malware detection module of Jura Server Guard.</p><div class="grid">
+<?php foreach ([['Last scan',$last['started_at']??'never'],['Users count',$users],['Sites count',$sites],['Files scanned',$last['files_scanned']??0],['New findings',$new],['Critical findings',$crit],['High findings',$high],['Quarantine count',$q]] as $c): ?><div class="card"><div class="muted"><?= e($c[0]) ?></div><h2><?= e($c[1]) ?></h2></div><?php endforeach ?>
+</div><div class="card"><h2>Recent suspicious log events</h2><table><tr><th>Risk</th><th>IP</th><th>Method</th><th>URI</th><th>Raw</th></tr><?php foreach($logs as $l): ?><tr><td><span class="badge <?= e($l['risk']) ?>"><?= e($l['risk']) ?></span></td><td><?= e($l['ip']) ?></td><td><?= e($l['method']) ?></td><td><?= e($l['uri']) ?></td><td><?= e(mb_strimwidth($l['raw_line'],0,180,'…')) ?></td></tr><?php endforeach ?></table></div>
+<?php $content=ob_get_clean(); include base_path('resources/views/layouts/app.php'); ?>

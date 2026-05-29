@@ -1,0 +1,8 @@
+/vendor
+/.env
+/storage/database.sqlite
+/storage/logs/*.log
+/storage/framework/cache/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+!.gitignore
