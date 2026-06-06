@@ -28,7 +28,7 @@ cd jura-server-guard
 sudo bin/install-almalinux.sh
 ```
 
-The installer checks root privileges, PHP 8.2+, Composer, prepares `/opt/jura-server-guard`, creates `.env`, creates SQLite at `/opt/jura-server-guard/storage/database.sqlite`, runs migrations, seeds rules, creates a random admin password, installs a web-panel systemd service, and installs a 10-minute scan timer.
+The installer checks root privileges, detects a PHP 8.2+ binary, prepares `/opt/jura-server-guard`, creates `.env`, creates SQLite at `/opt/jura-server-guard/storage/database.sqlite`, installs Composer dependencies with the selected PHP binary, runs migrations, seeds rules, creates a random admin password, installs a web-panel systemd service, and installs a 10-minute scan timer. If Composer is not available in `PATH`, the installer downloads a local bundled `composer.phar` into `/opt/jura-server-guard/bin/composer.phar` and runs it through the selected PHP binary.
 
 Final output includes:
 
@@ -42,12 +42,26 @@ Config: /opt/jura-server-guard/.env
 
 The password is shown once. Save it in a password manager.
 
-## Web panel
+### PHP selection on ISPmanager/AlmaLinux
 
-Default service command:
+ISPmanager servers can keep native system PHP at 8.0 for panel compatibility while alternative PHP versions are installed under `/opt/php82/bin/php`, `/opt/php83/bin/php`, `/opt/php84/bin/php`, and newer paths. The installer does not change system PHP, does not reset DNF PHP modules, and does not break ISPmanager native PHP.
+
+During installation, `bin/install-almalinux.sh` searches for a usable PHP binary in this order: `JURA_PHP_BIN`, `php` from `PATH`, `/opt/php85/bin/php`, `/opt/php84/bin/php`, `/opt/php83/bin/php`, `/opt/php82/bin/php`, `/usr/bin/php`, and `/usr/local/bin/php`. Each candidate must be executable, PHP 8.2 or newer, and have `PDO` plus `pdo_sqlite` loaded. The `sqlite3` extension is recommended; if it is missing but `pdo_sqlite` is present, the installer prints a warning and continues.
+
+If several suitable PHP binaries are found in an interactive shell, the installer asks which one to use and recommends `/opt/php83/bin/php` when available. In non-interactive mode, it uses a valid `JURA_PHP_BIN` first, then `/opt/php83/bin/php`, then the highest suitable PHP it found. The selected path is written to `.env` as `JURA_PHP_BIN` and used directly in systemd services instead of `/usr/bin/env php`.
+
+To force a specific alternative PHP binary, run:
 
 ```bash
-php artisan serve --host=0.0.0.0 --port=8765
+sudo JURA_PHP_BIN=/opt/php83/bin/php bin/install-almalinux.sh
+```
+
+## Web panel
+
+Default service command, using the PHP binary selected by the installer:
+
+```bash
+/opt/php83/bin/php artisan serve --host=0.0.0.0 --port=8765
 ```
 
 Panel pages:
@@ -120,7 +134,7 @@ Timer period: every 10 minutes.
 Manual cron alternative:
 
 ```cron
-*/10 * * * * cd /opt/jura-server-guard && php artisan guard:scan >> /var/log/jura-server-guard-scan.log 2>&1
+*/10 * * * * cd /opt/jura-server-guard && /opt/php83/bin/php artisan guard:scan >> /var/log/jura-server-guard-scan.log 2>&1
 ```
 
 ## Security notes
