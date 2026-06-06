@@ -172,6 +172,15 @@ EOF
   fi
 }
 
+generate_admin_password() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 12
+    return 0
+  fi
+
+  "$PHP_BIN" -r 'echo bin2hex(random_bytes(12));'
+}
+
 install_composer_if_needed() {
   local system_composer
   system_composer=$(command -v composer 2>/dev/null || true)
@@ -216,7 +225,7 @@ install_composer_if_needed
 "$PHP_BIN" "$COMPOSER_BIN" install --no-dev --optimize-autoloader
 "$PHP_BIN" artisan key:generate
 "$PHP_BIN" artisan migrate --force
-ADMIN_PASSWORD="$(tr -dc 'A-Za-z0-9_@%+=' </dev/urandom | head -c 24)"
+ADMIN_PASSWORD="$(generate_admin_password)"
 "$PHP_BIN" artisan guard:create-admin "$ADMIN_EMAIL" "$ADMIN_PASSWORD" >/dev/null
 "$PHP_BIN" artisan config:cache
 cat >/etc/systemd/system/jura-server-guard.service <<EOF
