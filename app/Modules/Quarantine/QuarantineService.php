@@ -17,7 +17,8 @@ class QuarantineService
         $owner = function_exists('posix_getpwuid') ? (posix_getpwuid($stat['uid'] ?? 0)['name'] ?? (string)($stat['uid'] ?? '')) : null;
         $group = function_exists('posix_getgrgid') ? (posix_getgrgid($stat['gid'] ?? 0)['name'] ?? (string)($stat['gid'] ?? '')) : null;
         if (!rename($src, $dest)) throw new RuntimeException('Failed to move file to quarantine.');
-        $id = DB::insert('INSERT INTO quarantine_items (finding_id,original_path,quarantine_path,sha256,owner,"group",permissions,mtime,reason,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', [$findingId,$src,$dest,$sha,$owner,$group,$perms,isset($stat['mtime'])?gmdate('Y-m-d H:i:s',$stat['mtime']):null,$reason,'quarantined',now(),now()]);
+        $groupCol = DB::quoteIdentifier('group');
+        $id = DB::insert("INSERT INTO quarantine_items (finding_id,original_path,quarantine_path,sha256,owner,$groupCol,permissions,mtime,reason,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", [$findingId,$src,$dest,$sha,$owner,$group,$perms,isset($stat['mtime'])?gmdate('Y-m-d H:i:s',$stat['mtime']):null,$reason,'quarantined',now(),now()]);
         DB::statement('UPDATE findings SET status=?, updated_at=? WHERE id=?', ['quarantined', now(), $findingId]);
         return $id;
     }

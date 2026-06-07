@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 APP_DIR="/opt/jura-server-guard"
-PORT="8765"
+PORT="${JURA_PORT:-8765}"
+BIND_HOST="${JURA_BIND_HOST:-127.0.0.1}"
+DB_CONNECTION="${JURA_DB_CONNECTION:-}"
+DB_HOST="${JURA_DB_HOST:-127.0.0.1}"
+DB_PORT="${JURA_DB_PORT:-3306}"
+DB_DATABASE="${JURA_DB_DATABASE:-jura_server_guard}"
+DB_USERNAME="${JURA_DB_USERNAME:-jsg}"
+DB_PASSWORD="${JURA_DB_PASSWORD:-}"
 ADMIN_EMAIL="${JURA_ADMIN_EMAIL:-admin@example.com}"
 PHP_BIN=""
 PHP_VERSION_SELECTED=""
@@ -32,14 +39,20 @@ php_candidate_info() {
     $hasPdo = extension_loaded("PDO");
     $hasPdoSqlite = extension_loaded("pdo_sqlite");
     $hasSqlite3 = extension_loaded("sqlite3");
-    echo PHP_VERSION . "|" . ($okVersion ? "yes" : "no") . "|" . ($hasPdo ? "yes" : "no") . "|" . ($hasPdoSqlite ? "yes" : "no") . "|" . ($hasSqlite3 ? "yes" : "no");
+    echo PHP_VERSION . "|" . ($okVersion ? "yes" : "no") . "|" . ($hasPdo ? "yes" : "no") . "|" . ($hasPdoSqlite ? "yes" : "no") . "|" . ($hasSqlite3 ? "yes" : "no") . "|" . (extension_loaded("pdo_mysql") ? "yes" : "no");
   ' 2>/dev/null); then
     return 1
   fi
 
-  IFS='|' read -r version ok_version has_pdo has_pdo_sqlite has_sqlite3 <<<"$info"
+  IFS='|' read -r version ok_version has_pdo has_pdo_sqlite has_sqlite3 has_pdo_mysql <<<"$info"
 
-  if [[ "$ok_version" != "yes" || "$has_pdo" != "yes" || "$has_pdo_sqlite" != "yes" ]]; then
+  if [[ "$ok_version" != "yes" || "$has_pdo" != "yes" ]]; then
+    return 1
+  fi
+  if [[ "$DB_CONNECTION" == "mysql" && "$has_pdo_mysql" != "yes" ]]; then
+    return 1
+  fi
+  if [[ "$DB_CONNECTION" == "sqlite" && "$has_pdo_sqlite" != "yes" ]]; then
     return 1
   fi
 
@@ -117,13 +130,13 @@ detect_php_binary() {
         php83_index=${#valid_paths[@]}
       fi
     elif [[ -n "${JURA_PHP_BIN:-}" && "$candidate" == "$JURA_PHP_BIN" ]]; then
-      echo "Warning: JURA_PHP_BIN=$JURA_PHP_BIN is not usable or lacks PHP 8.2+/PDO/pdo_sqlite; trying other PHP binaries." >&2
+      echo "Warning: JURA_PHP_BIN=$JURA_PHP_BIN is not usable or lacks PHP 8.2+/PDO/selected DB extension; trying other PHP binaries." >&2
     fi
   done
 
   if [[ ${#valid_paths[@]} -eq 0 ]]; then
     cat >&2 <<'EOF'
-PHP 8.2+ with PDO and pdo_sqlite is required.
+PHP 8.2+ with PDO and the selected DB extension (pdo_mysql for MySQL or pdo_sqlite for SQLite) is required.
 Checked JURA_PHP_BIN, php from PATH, /opt/php85/bin/php, /opt/php84/bin/php, /opt/php83/bin/php, /opt/php82/bin/php, /usr/bin/php, and /usr/local/bin/php.
 On ISPmanager/AlmaLinux, install or enable an alternative PHP such as /opt/php83/bin/php without changing native system PHP.
 EOF
@@ -167,18 +180,62 @@ EOF
   PHP_VERSION_SELECTED="${valid_versions[$((selected_index-1))]}"
   selected_sqlite3="${valid_sqlite3[$((selected_index-1))]}"
 
-  if [[ "$selected_sqlite3" != "yes" ]]; then
+  if [[ "$DB_CONNECTION" == "sqlite" && "$selected_sqlite3" != "yes" ]]; then
     echo "Warning: PHP sqlite3 extension is not loaded for $PHP_BIN. pdo_sqlite is available, so installation can continue." >&2
   fi
 }
 
 generate_admin_password() {
+  local password=""
   if command -v openssl >/dev/null 2>&1; then
-    openssl rand -hex 12
-    return 0
+    password=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9_@%+=' | cut -c1-24 || true)
   fi
+  if [[ -z "$password" || ${#password} -lt 16 ]]; then
+    password=$("$PHP_BIN" -r 'echo bin2hex(random_bytes(12));')
+  fi
+  printf '%s\n' "$password"
+}
 
-  "$PHP_BIN" -r 'echo bin2hex(random_bytes(12));'
+select_database_backend() {
+  if [[ -z "$DB_CONNECTION" ]]; then
+    DB_CONNECTION="mysql"
+    if [[ -t 0 && -t 1 ]]; then
+      echo "Select database backend:"
+      echo "[1] MariaDB/MySQL recommended for production"
+      echo "[2] SQLite only for small/local installations"
+      read -r -p "Database backend [default: 1]: " db_choice
+      if [[ "$db_choice" == "2" ]]; then DB_CONNECTION="sqlite"; fi
+    fi
+  fi
+  DB_CONNECTION=$(printf '%s' "$DB_CONNECTION" | tr '[:upper:]' '[:lower:]')
+  if [[ "$DB_CONNECTION" != "mysql" && "$DB_CONNECTION" != "sqlite" ]]; then echo "Unsupported JURA_DB_CONNECTION=$DB_CONNECTION" >&2; exit 1; fi
+}
+
+configure_database_env() {
+  append_env_value "DB_CONNECTION" "$DB_CONNECTION"
+  if [[ "$DB_CONNECTION" == "mysql" ]]; then
+    if [[ -t 0 && -t 1 ]]; then
+      read -r -p "MySQL host [$DB_HOST]: " v; [[ -n "$v" ]] && DB_HOST="$v"
+      read -r -p "MySQL port [$DB_PORT]: " v; [[ -n "$v" ]] && DB_PORT="$v"
+      read -r -p "MySQL database [$DB_DATABASE]: " v; [[ -n "$v" ]] && DB_DATABASE="$v"
+      read -r -p "MySQL username [$DB_USERNAME]: " v; [[ -n "$v" ]] && DB_USERNAME="$v"
+      if [[ -z "$DB_PASSWORD" ]]; then read -r -s -p "MySQL password: " DB_PASSWORD; echo; fi
+    fi
+    append_env_value "DB_HOST" "$DB_HOST"
+    append_env_value "DB_PORT" "$DB_PORT"
+    append_env_value "DB_DATABASE" "$DB_DATABASE"
+    append_env_value "DB_USERNAME" "$DB_USERNAME"
+    append_env_value "DB_PASSWORD" "$DB_PASSWORD"
+    append_env_value "DB_CHARSET" "utf8mb4"
+    append_env_value "DB_COLLATION" "utf8mb4_unicode_ci"
+    if ! DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" DB_DATABASE="$DB_DATABASE" DB_USERNAME="$DB_USERNAME" DB_PASSWORD="$DB_PASSWORD" "$PHP_BIN" -r '$h=getenv("DB_HOST");$p=getenv("DB_PORT");$d=getenv("DB_DATABASE");$u=getenv("DB_USERNAME");$pw=getenv("DB_PASSWORD");try{new PDO("mysql:host=$h;port=$p;dbname=$d;charset=utf8mb4",$u,$pw,[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);}catch(Throwable $e){fwrite(STDERR,$e->getMessage().PHP_EOL);exit(1);}' ; then
+      echo "Cannot connect to MySQL database. Create DB/user first or provide correct JURA_DB_* values." >&2
+      exit 1
+    fi
+  else
+    append_env_value "DB_DATABASE" "$APP_DIR/storage/database.sqlite"
+    touch "$APP_DIR/storage/database.sqlite"
+  fi
 }
 
 install_composer_if_needed() {
@@ -209,6 +266,7 @@ install_composer_if_needed() {
   chmod 0755 "$COMPOSER_BIN"
 }
 
+select_database_backend
 detect_php_binary
 mkdir -p "$APP_DIR"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -218,9 +276,15 @@ fi
 cd "$APP_DIR"
 if [[ ! -f .env ]]; then cp .env.example .env; fi
 mkdir -p storage/logs storage/framework/cache storage/framework/sessions storage/framework/views bin
-append_env_value "DB_DATABASE" "$APP_DIR/storage/database.sqlite"
+configure_database_env
 append_env_value "JURA_PHP_BIN" "$PHP_BIN"
-touch "$APP_DIR/storage/database.sqlite"
+append_env_value "JURA_WEB_ACTIONS_ENABLED" "false"
+append_env_value "JURA_BIND_HOST" "$BIND_HOST"
+append_env_value "JURA_PORT" "$PORT"
+append_env_value "JURA_SCAN_INTERVAL_MINUTES" "30"
+append_env_value "JURA_SCAN_OLD_DUBL_BY_DEFAULT" "false"
+append_env_value "JURA_SCAN_STORAGE_BY_DEFAULT" "false"
+append_env_value "JURA_HASH_ALL_FILES" "false"
 install_composer_if_needed
 "$PHP_BIN" "$COMPOSER_BIN" install --no-dev --optimize-autoloader
 "$PHP_BIN" artisan key:generate
@@ -236,7 +300,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$APP_DIR
-ExecStart=$PHP_BIN artisan serve --host=127.0.0.1 --port=$PORT
+ExecStart=$PHP_BIN artisan serve --host=$BIND_HOST --port=$PORT
 Restart=always
 RestartSec=5
 Environment=APP_ENV=production
@@ -255,11 +319,11 @@ ExecStart=$PHP_BIN $APP_DIR/artisan guard:scan
 EOF
 cat >/etc/systemd/system/jura-server-guard-scan.timer <<EOF
 [Unit]
-Description=Run Jura Server Guard scan every 10 minutes
+Description=Run Jura Server Guard scan every 30 minutes
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=10min
+OnUnitActiveSec=30min
 Unit=jura-server-guard-scan.service
 
 [Install]
@@ -270,11 +334,12 @@ systemctl enable --now jura-server-guard.service
 systemctl enable --now jura-server-guard-scan.timer
 cat <<EOF
 Jura Server Guard installed.
-Panel: http://127.0.0.1:$PORT
+Panel: http://$BIND_HOST:$PORT
 Default login: $ADMIN_EMAIL
 Default password: $ADMIN_PASSWORD
 Config: $APP_DIR/.env
 PHP binary: $PHP_BIN
 PHP version: $PHP_VERSION_SELECTED
+DB backend: $DB_CONNECTION
 Composer: $COMPOSER_LABEL
 EOF

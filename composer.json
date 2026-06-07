@@ -5,8 +5,7 @@
     "license": "AGPL-3.0-or-later",
     "require": {
         "php": ">=8.2",
-        "ext-pdo": "*",
-        "ext-pdo_sqlite": "*"
+        "ext-pdo": "*"
     },
     "autoload": {
         "psr-4": {
@@ -20,5 +19,9 @@
         "post-autoload-dump": [
             "@php artisan package:discover --ansi"
         ]
+    },
+    "suggest": {
+        "ext-pdo_mysql": "Required for the recommended MariaDB/MySQL production backend.",
+        "ext-pdo_sqlite": "Required only for the SQLite local/small-install backend."
     }
 }

@@ -5,22 +5,42 @@ use App\Support\DB;
 
 class InventoryService
 {
-    public function refresh(?string $userFilter = null, ?string $sitePath = null): array
+    public function refresh(?string $userFilter = null, ?string $sitePath = null, array $options = []): array
     {
         $paths = $sitePath ? [$sitePath] : (glob(config('guard.site_pattern'), GLOB_ONLYDIR) ?: []);
         $sites = [];
         foreach ($paths as $path) {
             $path = rtrim(realpath($path) ?: $path, '/');
             if (!is_dir($path)) continue;
+            $type = $this->classify($path);
+            if (!$this->shouldIncludeSite($path, $type, $options)) continue;
             $parts = explode('/', trim($path, '/'));
             $user = $parts[2] ?? basename(dirname(dirname($path)));
             if ($userFilter && $user !== $userFilter) continue;
             $base = "/var/www/$user";
             $userId = $this->upsertUser($user, $base);
-            $sites[] = $this->upsertSite($userId, basename($path), $path, $this->classify($path));
+            $sites[] = $this->upsertSite($userId, basename($path), $path, $type);
         }
         return $sites;
     }
+    private function shouldIncludeSite(string $path, string $type, array $options): bool
+    {
+        $name = basename($path);
+        $includeOld = (bool)($options['include_old'] ?? config('guard.scan_old_dubl_by_default'));
+        $includeStorage = (bool)($options['include_storage'] ?? config('guard.scan_storage_by_default'));
+        $includeBackups = (bool)($options['include_backups'] ?? false);
+
+        if (in_array($type, ['old', 'dubl'], true) && !$includeOld) return false;
+        if ($type === 'storage' && !$includeStorage) return false;
+        if ($type === 'backup' && !$includeBackups) return false;
+
+        foreach (config('guard.exclude_site_names') as $pattern) {
+            if (fnmatch($pattern, $name, FNM_CASEFOLD) && !$includeOld && !$includeBackups) return false;
+        }
+
+        return true;
+    }
+
     private function upsertUser(string $name, string $base): int
     {
         $row = DB::first('SELECT id FROM users WHERE name = ?', [$name]);
