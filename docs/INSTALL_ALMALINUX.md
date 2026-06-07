@@ -16,7 +16,7 @@ cd jura-server-guard
 sudo bin/install-almalinux.sh
 ```
 
-The installer copies the project to `/opt/jura-server-guard`, detects a PHP 8.2+ binary, creates `/opt/jura-server-guard/storage/database.sqlite`, installs dependencies with Composer, runs migrations, creates a random admin password, starts the web panel on port `8765`, and enables a scan timer every 10 minutes. If Composer is missing from `PATH`, the installer downloads `https://getcomposer.org/download/latest-stable/composer.phar` to `/opt/jura-server-guard/bin/composer.phar` and runs it with the selected PHP binary.
+The installer copies the project to `/opt/jura-server-guard`, detects a PHP 8.2+ binary, creates `/opt/jura-server-guard/storage/database.sqlite`, installs dependencies with Composer, runs migrations, creates a random admin password, starts the web panel on `127.0.0.1:8765`, and enables a scan timer every 10 minutes. If Composer is missing from `PATH`, the installer downloads `https://getcomposer.org/download/latest-stable/composer.phar` to `/opt/jura-server-guard/bin/composer.phar` and runs it with the selected PHP binary.
 
 
 ## PHP on ISPmanager/AlmaLinux
@@ -44,11 +44,17 @@ To force a specific alternative PHP binary:
 sudo JURA_PHP_BIN=/opt/php83/bin/php bin/install-almalinux.sh
 ```
 
-The selected binary is written to `.env` as `JURA_PHP_BIN` and is used directly in the generated systemd units, for example:
+The selected binary is written to `.env` as `JURA_PHP_BIN` and is used directly in the generated systemd units. `artisan serve` also reads `JURA_PHP_BIN` before launching PHP's built-in development server, so the child server uses the selected alternative PHP binary instead of `php` from `PATH`. For example:
 
 ```ini
-ExecStart=/opt/php83/bin/php artisan serve --host=0.0.0.0 --port=8765
+ExecStart=/opt/php83/bin/php artisan serve --host=127.0.0.1 --port=8765
 ExecStart=/opt/php83/bin/php /opt/jura-server-guard/artisan guard:scan
+```
+
+When that service starts, the generated child server command uses the selected PHP binary, for example:
+
+```bash
+/opt/php83/bin/php -S 127.0.0.1:8765 -t /opt/jura-server-guard/public /opt/jura-server-guard/public/index.php
 ```
 
 ## Services
@@ -60,16 +66,16 @@ journalctl -u jura-server-guard.service -f
 journalctl -u jura-server-guard-scan.service -n 100
 ```
 
-## Firewall
+## Remote access
 
-If the panel should be reachable remotely:
+The installer binds the panel to `127.0.0.1` by default, so opening the firewall alone will not expose it. For production remote access, prefer an SSH tunnel, VPN, or reverse proxy with TLS and access restrictions instead of exposing the built-in PHP server directly.
+
+If you intentionally reconfigure the service to bind to a non-localhost address, then open the firewall port:
 
 ```bash
 firewall-cmd --add-port=8765/tcp --permanent
 firewall-cmd --reload
 ```
-
-For production, prefer binding through a private interface, VPN, or reverse proxy with TLS and access restrictions.
 
 ## Manual scan
 

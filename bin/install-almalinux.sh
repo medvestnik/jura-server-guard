@@ -227,7 +227,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$APP_DIR
-ExecStart=$PHP_BIN artisan serve --host=0.0.0.0 --port=$PORT
+ExecStart=$PHP_BIN artisan serve --host=127.0.0.1 --port=$PORT
 Restart=always
 RestartSec=5
 Environment=APP_ENV=production
@@ -259,11 +259,9 @@ EOF
 systemctl daemon-reload
 systemctl enable --now jura-server-guard.service
 systemctl enable --now jura-server-guard-scan.timer
-SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-SERVER_IP=${SERVER_IP:-SERVER_IP}
 cat <<EOF
 Jura Server Guard installed.
-Panel: http://$SERVER_IP:$PORT
+Panel: http://127.0.0.1:$PORT
 Default login: $ADMIN_EMAIL
 Default password: $ADMIN_PASSWORD
 Config: $APP_DIR/.env
