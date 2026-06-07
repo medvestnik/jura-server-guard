@@ -9,12 +9,12 @@ License: **GNU AGPL-3.0-or-later**. Target OS for the first MVP: **AlmaLinux 8/9
 
 - Local web panel on a separate port (`http://127.0.0.1:8765` by default; use a VPN, SSH tunnel, or reverse proxy if remote access is needed).
 - Required admin login for the panel.
-- SQLite by default; no MySQL required.
-- CLI scanner for all sites, a single server user, or a single site path.
+- MariaDB/MySQL production backend by default; SQLite remains available for local development and very small installations.
+- Lock-aware CLI scanner for all sites, a single server user, or a single site path, with old/dubl/backup/storage exclusions and progress output.
 - Inventory of `/var/www/{user}/data/www/{site}` users and websites.
 - File snapshot history with SHA-256, size, mtime, owner, group, permissions, missing-file tracking, and important-file change findings.
 - Built-in Jura AV Monitor malware rules for webshell markers, suspicious PHP functions, risky upload/cache paths, suspicious filenames, and 32-character hex PHP names.
-- Built-in allowlist for common CMS/plugin false positives such as Twig `Environment.php`, Joomla/OpenCart loaders, WordPress plugin `index.php`, and WordPress block asset files.
+- Built-in allowlist for common CMS/plugin false positives such as Twig `Environment.php`, Joomla/OpenCart loaders, Joomla/Akeeba restore/extract scripts, Freemius updater files, Regular Labs URI classes, OpenCart normal `home.php` controllers, WordPress plugin `index.php`, and WordPress block asset files.
 - Suspicious access/error log analyzer with false-positive exclusions for normal delivery URLs/images.
 - Safe CLI quarantine and restore workflow.
 - Web quarantine buttons are disabled by default unless `JURA_WEB_ACTIONS_ENABLED=true`.
@@ -28,7 +28,7 @@ cd jura-server-guard
 sudo bin/install-almalinux.sh
 ```
 
-The installer checks root privileges, detects a PHP 8.2+ binary, prepares `/opt/jura-server-guard`, creates `.env`, creates SQLite at `/opt/jura-server-guard/storage/database.sqlite`, installs Composer dependencies with the selected PHP binary, runs migrations, seeds rules, creates a random admin password, installs a web-panel systemd service, and installs a 10-minute scan timer. If Composer is not available in `PATH`, the installer downloads a local bundled `composer.phar` into `/opt/jura-server-guard/bin/composer.phar` and runs it through the selected PHP binary.
+The installer checks root privileges, asks for the database backend (MariaDB/MySQL recommended for production; SQLite for small/local installs), detects a PHP 8.2+ binary with the matching PDO extension, prepares `/opt/jura-server-guard`, creates `.env`, verifies MySQL connectivity when selected, installs Composer dependencies with the selected PHP binary, runs migrations, seeds rules, creates a random admin password, installs a localhost-only web-panel systemd service, and installs a 30-minute lock-aware scan timer. If Composer is not available in `PATH`, the installer downloads a local bundled `composer.phar` into `/opt/jura-server-guard/bin/composer.phar` and runs it through the selected PHP binary.
 
 Final output includes:
 
@@ -46,7 +46,7 @@ The password is shown once. Save it in a password manager.
 
 ISPmanager servers can keep native system PHP at 8.0 for panel compatibility while alternative PHP versions are installed under `/opt/php82/bin/php`, `/opt/php83/bin/php`, `/opt/php84/bin/php`, and newer paths. The installer does not change system PHP, does not reset DNF PHP modules, and does not break ISPmanager native PHP.
 
-During installation, `bin/install-almalinux.sh` searches for a usable PHP binary in this order: `JURA_PHP_BIN`, `php` from `PATH`, `/opt/php85/bin/php`, `/opt/php84/bin/php`, `/opt/php83/bin/php`, `/opt/php82/bin/php`, `/usr/bin/php`, and `/usr/local/bin/php`. Each candidate must be executable, PHP 8.2 or newer, and have `PDO` plus `pdo_sqlite` loaded. The `sqlite3` extension is recommended; if it is missing but `pdo_sqlite` is present, the installer prints a warning and continues.
+During installation, `bin/install-almalinux.sh` searches for a usable PHP binary in this order: `JURA_PHP_BIN`, `php` from `PATH`, `/opt/php85/bin/php`, `/opt/php84/bin/php`, `/opt/php83/bin/php`, `/opt/php82/bin/php`, `/usr/bin/php`, and `/usr/local/bin/php`. Each candidate must be executable, PHP 8.2 or newer, and have `PDO` plus the selected DB extension loaded (`pdo_mysql` for MySQL or `pdo_sqlite` for SQLite). The `sqlite3` extension is recommended; if it is missing but `pdo_sqlite` is present, the installer prints a warning and continues.
 
 If several suitable PHP binaries are found in an interactive shell, the installer asks which one to use and recommends `/opt/php83/bin/php` when available. In non-interactive mode, it uses a valid `JURA_PHP_BIN` first, then `/opt/php83/bin/php`, then the highest suitable PHP it found. The selected path is written to `.env` as `JURA_PHP_BIN` and used directly in systemd services instead of `/usr/bin/env php`. The web panel also reads `JURA_PHP_BIN` when `artisan serve` starts the PHP built-in development server, so the child server continues to run with the selected PHP binary instead of falling back to `php` from `PATH`.
 
@@ -80,14 +80,23 @@ Panel pages:
 ## CLI commands
 
 ```bash
-php artisan guard:scan
+php artisan guard:scan [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=200000] [--max-seconds=300] [--dry-run]
 php artisan guard:scan-user USERNAME
 php artisan guard:scan-site /var/www/user/data/www/example.com
 php artisan guard:logs
+php artisan guard:scan-unlock [--force]
+php artisan guard:cleanup-running-scans [--hours=2]
+php artisan guard:prune --days=30
+php artisan guard:db-stats
+php artisan guard:optimize-db
 php artisan guard:quarantine FINDING_ID
 php artisan guard:restore QUARANTINE_ID
 php artisan guard:status
 ```
+
+Scanner and log commands use a global lock at `storage/locks/scan.lock` so timer and manual scans cannot overlap. If a scan is already running, the second command exits with the lock start time and PID. `--force` removes a stale lock; `--no-lock` is only for debugging.
+
+By default scan-user scans active/normal sites only and excludes old/dubl/backup/storage/cache/temp/vendor/node_modules paths. Use `--include-old`, `--include-storage`, or `--include-backups` for explicit expanded scope.
 
 ## Scanner rules
 
@@ -131,7 +140,7 @@ The installer creates:
 /etc/systemd/system/jura-server-guard-scan.timer
 ```
 
-Timer period: every 10 minutes.
+Timer period: every 30 minutes by default. The app-level scan lock prevents overlapping timer/manual scans.
 
 Manual cron alternative:
 
@@ -151,3 +160,39 @@ Manual cron alternative:
 ## License
 
 GNU AGPL-3.0-or-later. See `LICENSE`.
+
+
+## Database backend
+
+Production AlmaLinux/ISPmanager servers should use MariaDB/MySQL:
+
+```env
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=jura_server_guard
+DB_USERNAME=jsg
+DB_PASSWORD=...
+DB_CHARSET=utf8mb4
+DB_COLLATION=utf8mb4_unicode_ci
+```
+
+SQLite remains supported for development or very small installs:
+
+```env
+DB_CONNECTION=sqlite
+DB_DATABASE=/opt/jura-server-guard/storage/database.sqlite
+```
+
+Manual MySQL creation example:
+
+```sql
+CREATE DATABASE jura_server_guard CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'jsg'@'localhost' IDENTIFIED BY 'STRONG_PASSWORD';
+GRANT ALL PRIVILEGES ON jura_server_guard.* TO 'jsg'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+## CSV export and false-positive controls
+
+Findings and Suspicious logs pages include CSV export buttons that preserve current filters. Findings are deduplicated by path/type/rule fingerprint, ignored findings are not recreated unless the file hash changes, and known Joomla/Akeeba/Freemius/Jetpack/SuiteCRM/Regular Labs/OpenCart paths are allowlisted so normal CMS/plugin files are not high/critical by filename alone. High/critical risk is reserved for known IOC strings, webshell callbacks, ALFA_DATA/alfacgiapi, malware-like filenames, risky upload/cache PHP with execution indicators, and suspicious HTTP events linked to the exact file.

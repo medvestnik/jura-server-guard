@@ -2,85 +2,95 @@
 
 ## Requirements
 
-- AlmaLinux 8 or 9
-- root shell
-- PHP 8.2 or newer with `PDO` and `pdo_sqlite`
-- Composer in `PATH`, or `curl`/`wget` so the installer can download a bundled Composer PHAR
-- systemd
+- AlmaLinux 8 or 9 with root shell and systemd.
+- PHP 8.2+ with `PDO` and the extension for the selected DB backend:
+  - production MariaDB/MySQL: `pdo_mysql`;
+  - small/local SQLite: `pdo_sqlite`.
+- Composer in `PATH`, or `curl`/`wget` so the installer can download a bundled Composer PHAR.
 
-## Install
+## Recommended production database
 
-```bash
-git clone https://example.com/jura-server-guard.git
-cd jura-server-guard
-sudo bin/install-almalinux.sh
+MariaDB/MySQL is recommended for real ISPmanager/shared-hosting servers. SQLite remains available for local development and very small installations only.
+
+Manual DB creation example:
+
+```sql
+CREATE DATABASE jura_server_guard CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'jsg'@'localhost' IDENTIFIED BY 'STRONG_PASSWORD';
+GRANT ALL PRIVILEGES ON jura_server_guard.* TO 'jsg'@'localhost';
+FLUSH PRIVILEGES;
 ```
 
-The installer copies the project to `/opt/jura-server-guard`, detects a PHP 8.2+ binary, creates `/opt/jura-server-guard/storage/database.sqlite`, installs dependencies with Composer, runs migrations, creates a random admin password, starts the web panel on `127.0.0.1:8765`, and enables a scan timer every 10 minutes. If Composer is missing from `PATH`, the installer downloads `https://getcomposer.org/download/latest-stable/composer.phar` to `/opt/jura-server-guard/bin/composer.phar` and runs it with the selected PHP binary.
+Non-interactive install example:
 
+```bash
+sudo JURA_PHP_BIN=/opt/php83/bin/php \
+  JURA_DB_CONNECTION=mysql \
+  JURA_DB_HOST=127.0.0.1 \
+  JURA_DB_PORT=3306 \
+  JURA_DB_DATABASE=jura_server_guard \
+  JURA_DB_USERNAME=jsg \
+  JURA_DB_PASSWORD='STRONG_PASSWORD' \
+  bin/install-almalinux.sh
+```
+
+Interactive installation asks:
+
+```text
+Select database backend:
+[1] MariaDB/MySQL recommended for production
+[2] SQLite only for small/local installations
+```
+
+The default is MySQL. The installer writes DB settings to `.env`, checks the selected PHP extension, verifies MySQL connectivity, runs migrations, creates the admin user, creates systemd service/timer units, prints the generated password, and starts services. It does not drop or destroy existing databases.
 
 ## PHP on ISPmanager/AlmaLinux
 
-ISPmanager installations often keep native PHP at `/usr/bin/php` version 8.0. Do not change that native PHP just for Jura Server Guard: the installer supports ISPmanager-style alternative PHP binaries such as `/opt/php82/bin/php`, `/opt/php83/bin/php`, `/opt/php84/bin/php`, and `/opt/php85/bin/php`. It does not run `dnf module reset php` and does not alter the system PHP used by ISPmanager.
+ISPmanager often keeps `/usr/bin/php` at 8.0 while alternative PHP versions live under `/opt/php82/bin/php`, `/opt/php83/bin/php`, `/opt/php84/bin/php`, etc. Do not change native system PHP for Jura Server Guard. Set or select `JURA_PHP_BIN=/opt/php83/bin/php` (or newer). The installer writes it to `.env`, systemd uses it directly, and `artisan serve` also uses `JURA_PHP_BIN` for the child `php -S` process so the panel does not fall back to `/usr/bin/php`.
 
-`bin/install-almalinux.sh` checks candidates in this order:
+## Safe production defaults
 
-1. `JURA_PHP_BIN` if set
-2. `php` from `PATH`
-3. `/opt/php85/bin/php`
-4. `/opt/php84/bin/php`
-5. `/opt/php83/bin/php`
-6. `/opt/php82/bin/php`
-7. `/usr/bin/php`
-8. `/usr/local/bin/php`
+The installer uses:
 
-A candidate must be executable, report `PHP_VERSION >= 8.2.0`, and load both `PDO` and `pdo_sqlite`. The `sqlite3` extension is recommended; the installer warns if it is missing but continues when `pdo_sqlite` is available.
-
-When several suitable PHP binaries are available in an interactive shell, the installer displays a numbered list and recommends `/opt/php83/bin/php` when it is suitable. In non-interactive mode, it selects a valid `JURA_PHP_BIN` first, then `/opt/php83/bin/php`, then the highest suitable PHP binary found.
-
-To force a specific alternative PHP binary:
-
-```bash
-sudo JURA_PHP_BIN=/opt/php83/bin/php bin/install-almalinux.sh
+```env
+JURA_WEB_ACTIONS_ENABLED=false
+JURA_BIND_HOST=127.0.0.1
+JURA_PORT=8765
+JURA_SCAN_INTERVAL_MINUTES=30
+JURA_SCAN_OLD_DUBL_BY_DEFAULT=false
+JURA_SCAN_STORAGE_BY_DEFAULT=false
+JURA_HASH_ALL_FILES=false
 ```
 
-The selected binary is written to `.env` as `JURA_PHP_BIN` and is used directly in the generated systemd units. `artisan serve` also reads `JURA_PHP_BIN` before launching PHP's built-in development server, so the child server uses the selected alternative PHP binary instead of `php` from `PATH`. For example:
+The panel is bound to localhost by default. Use SSH tunnel, VPN, or a restricted TLS reverse proxy for remote access.
 
-```ini
-ExecStart=/opt/php83/bin/php artisan serve --host=127.0.0.1 --port=8765
-ExecStart=/opt/php83/bin/php /opt/jura-server-guard/artisan guard:scan
-```
+## Scan lock and scope controls
 
-When that service starts, the generated child server command uses the selected PHP binary, for example:
+All heavy scanner/log commands use `storage/locks/scan.lock`. If another scan is active, a new scan exits with a message showing start time and PID. Use `--force` only to remove a stale lock whose PID is dead, and `--no-lock` only for debugging.
 
 ```bash
-/opt/php83/bin/php -S 127.0.0.1:8765 -t /opt/jura-server-guard/public /opt/jura-server-guard/public/index.php
-```
-
-## Services
-
-```bash
-systemctl status jura-server-guard.service
-systemctl status jura-server-guard-scan.timer
-journalctl -u jura-server-guard.service -f
-journalctl -u jura-server-guard-scan.service -n 100
-```
-
-## Remote access
-
-The installer binds the panel to `127.0.0.1` by default, so opening the firewall alone will not expose it. For production remote access, prefer an SSH tunnel, VPN, or reverse proxy with TLS and access restrictions instead of exposing the built-in PHP server directly.
-
-If you intentionally reconfigure the service to bind to a non-localhost address, then open the firewall port:
-
-```bash
-firewall-cmd --add-port=8765/tcp --permanent
-firewall-cmd --reload
-```
-
-## Manual scan
-
-```bash
-cd /opt/jura-server-guard
 /opt/php83/bin/php artisan guard:scan
-/opt/php83/bin/php artisan guard:status
+/opt/php83/bin/php artisan guard:scan-user USER --include-old --include-backups
+/opt/php83/bin/php artisan guard:scan-unlock --force
+/opt/php83/bin/php artisan guard:cleanup-running-scans --hours=2
 ```
+
+By default `guard:scan-user` scans only active/normal site directories from `/var/www/*/data/www/*` and excludes old, dubl, backup, storage, cache, temp, vendor, and node_modules paths. Use `--include-old`, `--include-storage`, or `--include-backups` when you intentionally want those trees.
+
+## Maintenance commands
+
+```bash
+/opt/php83/bin/php artisan guard:db-stats
+/opt/php83/bin/php artisan guard:prune --days=30
+/opt/php83/bin/php artisan guard:optimize-db
+```
+
+SQLite optimization runs `VACUUM`/`ANALYZE`; MySQL optimization shows table statistics and runs `OPTIMIZE TABLE`.
+
+## CSV export
+
+The web panel provides CSV export links on Findings and Suspicious logs. Current filters are included in the export query: risk, user/site, status/type, path or URI contains, IP, and date range.
+
+## SQLite to MySQL migration note
+
+For large production servers, create a fresh MySQL database, set `DB_CONNECTION=mysql` and credentials in `.env`, run `php artisan migrate`, and rescan. Existing SQLite findings can be exported from the web panel as CSV before switching. Direct automated SQLite-to-MySQL import is intentionally not performed by the installer to avoid destructive surprises.

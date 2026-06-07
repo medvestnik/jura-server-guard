@@ -14,6 +14,10 @@ class RuleRepository
         foreach ($rules['suspicious_names'] as $n) $this->insertRule('Suspicious name: ' . $n, 'high', 'webshell', $n, 'path', 'Known malware filename.');
         $this->insertRule('32-char hex PHP filename', 'medium', 'suspicious_php', '/[a-f0-9]{32}\.php$/i', 'regex', 'Hex-like PHP filename.');
         foreach ($rules['allowlist'] as $p) $this->insertAllow('Built-in allowlist: ' . $p, $p, 'Known CMS/plugin false positive pattern.');
+        DB::statement("UPDATE rules SET risk='medium', type='suspicious_php', updated_at=? WHERE pattern='target_folder'", [now()]);
+        foreach (['home.php','restore.php','extract.php','download.php','Uri.php','Blog.php','wp-blog-header.php','nusoap.php'] as $safeName) {
+            DB::statement('UPDATE rules SET enabled=0, updated_at=? WHERE pattern=? AND type IN (\'webshell\',\'suspicious_php\')', [now(), $safeName]);
+        }
     }
     private function insertRule(string $name, string $risk, string $type, string $pattern, string $patternType, ?string $description): void
     {
