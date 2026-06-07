@@ -15,10 +15,35 @@ class Application
             };
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
     }
-    private function help(): int { echo "Jura Server Guard artisan commands:\n  guard:scan\n  guard:scan-user {user}\n  guard:scan-site {path}\n  guard:logs\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  migrate\n  serve --host=0.0.0.0 --port=8765\n"; return 0; }
+    private function help(): int { echo "Jura Server Guard artisan commands:\n  guard:scan\n  guard:scan-user {user}\n  guard:scan-site {path}\n  guard:logs\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
     private function noop(string $cmd): int { if ($cmd==='key:generate') $this->ensureKey(); echo "$cmd complete.\n"; return 0; }
     private function ensureKey(): void { $env=base_path('.env'); if (!is_file($env) && is_file(base_path('.env.example'))) copy(base_path('.env.example'), $env); if (is_file($env)) { $c=file_get_contents($env); if (preg_match('/^APP_KEY=\s*$/m',$c)) file_put_contents($env,preg_replace('/^APP_KEY=\s*$/m','APP_KEY=base64:'.base64_encode(random_bytes(32)),$c)); } }
-    private function serve(array $argv): int { $host='127.0.0.1'; $port='8765'; foreach ($argv as $a) { if (str_starts_with($a,'--host=')) $host=substr($a,7); if (str_starts_with($a,'--port=')) $port=substr($a,7); } passthru(sprintf('php -S %s:%s -t %s %s', escapeshellarg($host), escapeshellarg($port), escapeshellarg(base_path('public')), escapeshellarg(base_path('public/index.php'))), $code); return (int)$code; }
+    private function serve(array $argv): int
+    {
+        $host = '127.0.0.1';
+        $port = '8765';
+
+        foreach ($argv as $a) {
+            if (str_starts_with($a, '--host=')) $host = substr($a, 7);
+            if (str_starts_with($a, '--port=')) $port = substr($a, 7);
+        }
+
+        $phpBinary = $this->phpBinaryForServer();
+        passthru(sprintf('%s -S %s:%s -t %s %s', escapeshellarg($phpBinary), escapeshellarg($host), escapeshellarg($port), escapeshellarg(base_path('public')), escapeshellarg(base_path('public/index.php'))), $code);
+
+        return (int) $code;
+    }
+
+    private function phpBinaryForServer(): string
+    {
+        $configured = trim((string) env_value('JURA_PHP_BIN', ''));
+
+        if ($configured !== '' && is_executable($configured)) {
+            return $configured;
+        }
+
+        return PHP_BINARY;
+    }
     private function migrate(): int { foreach (glob(base_path('database/migrations/*.sql')) ?: [] as $file) DB::pdo()->exec(file_get_contents($file)); (new RuleRepository())->seedDefaults(); echo "Migrated SQLite database: ".DB::path()."\n"; return 0; }
     private function seedRules(): int { (new RuleRepository())->seedDefaults(); echo "Default rules and allowlist seeded.\n"; return 0; }
     private function createAdmin(string $email, string $password): int { $hash=password_hash($password,PASSWORD_DEFAULT); if(DB::first('SELECT id FROM admin_users WHERE email=?',[$email])) DB::statement('UPDATE admin_users SET password_hash=?,updated_at=? WHERE email=?',[$hash,now(),$email]); else DB::insert('INSERT INTO admin_users (email,password_hash,created_at,updated_at) VALUES (?,?,?,?)',[$email,$hash,now(),now()]); echo "Admin login: $email\nAdmin password: $password\n"; return 0; }

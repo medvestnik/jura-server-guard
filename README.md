@@ -7,7 +7,7 @@ License: **GNU AGPL-3.0-or-later**. Target OS for the first MVP: **AlmaLinux 8/9
 
 ## Features
 
-- Local web panel on a separate port (`http://SERVER_IP:8765`).
+- Local web panel on a separate port (`http://127.0.0.1:8765` by default; use a VPN, SSH tunnel, or reverse proxy if remote access is needed).
 - Required admin login for the panel.
 - SQLite by default; no MySQL required.
 - CLI scanner for all sites, a single server user, or a single site path.
@@ -34,7 +34,7 @@ Final output includes:
 
 ```text
 Jura Server Guard installed.
-Panel: http://SERVER_IP:8765
+Panel: http://127.0.0.1:8765
 Default login: admin@example.com
 Default password: generated-password
 Config: /opt/jura-server-guard/.env
@@ -48,7 +48,7 @@ ISPmanager servers can keep native system PHP at 8.0 for panel compatibility whi
 
 During installation, `bin/install-almalinux.sh` searches for a usable PHP binary in this order: `JURA_PHP_BIN`, `php` from `PATH`, `/opt/php85/bin/php`, `/opt/php84/bin/php`, `/opt/php83/bin/php`, `/opt/php82/bin/php`, `/usr/bin/php`, and `/usr/local/bin/php`. Each candidate must be executable, PHP 8.2 or newer, and have `PDO` plus `pdo_sqlite` loaded. The `sqlite3` extension is recommended; if it is missing but `pdo_sqlite` is present, the installer prints a warning and continues.
 
-If several suitable PHP binaries are found in an interactive shell, the installer asks which one to use and recommends `/opt/php83/bin/php` when available. In non-interactive mode, it uses a valid `JURA_PHP_BIN` first, then `/opt/php83/bin/php`, then the highest suitable PHP it found. The selected path is written to `.env` as `JURA_PHP_BIN` and used directly in systemd services instead of `/usr/bin/env php`.
+If several suitable PHP binaries are found in an interactive shell, the installer asks which one to use and recommends `/opt/php83/bin/php` when available. In non-interactive mode, it uses a valid `JURA_PHP_BIN` first, then `/opt/php83/bin/php`, then the highest suitable PHP it found. The selected path is written to `.env` as `JURA_PHP_BIN` and used directly in systemd services instead of `/usr/bin/env php`. The web panel also reads `JURA_PHP_BIN` when `artisan serve` starts the PHP built-in development server, so the child server continues to run with the selected PHP binary instead of falling back to `php` from `PATH`.
 
 To force a specific alternative PHP binary, run:
 
@@ -58,11 +58,13 @@ sudo JURA_PHP_BIN=/opt/php83/bin/php bin/install-almalinux.sh
 
 ## Web panel
 
-Default service command, using the PHP binary selected by the installer:
+Default service command, using the PHP binary selected by the installer and binding only to localhost for security:
 
 ```bash
-/opt/php83/bin/php artisan serve --host=0.0.0.0 --port=8765
+/opt/php83/bin/php artisan serve --host=127.0.0.1 --port=8765
 ```
+
+`artisan serve` reads `JURA_PHP_BIN` from `.env` and starts the built-in server with that same binary, for example `/opt/php83/bin/php -S 127.0.0.1:8765 -t public public/index.php`. If `JURA_PHP_BIN` is unset or not executable, it falls back to `PHP_BINARY`.
 
 Panel pages:
 
