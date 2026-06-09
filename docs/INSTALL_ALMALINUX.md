@@ -91,6 +91,10 @@ SQLite optimization runs `VACUUM`/`ANALYZE`; MySQL optimization shows table stat
 
 The web panel provides CSV export links on Findings and Suspicious logs. Current filters are included in the export query: risk, user/site, status/type, path or URI contains, IP, and date range.
 
+## MySQL long path indexes
+
+On MySQL/MariaDB with `utf8mb4`, Jura Server Guard stores long filesystem paths in full but avoids normal or unique indexes on those long path strings. Migrations use SHA-256 hex hash columns (`path_hash`, `finding_hash`, `original_path_hash`, and `uri_hash`) for exact indexed lookups and deduplication, with optional 191-character prefix indexes only for filtering. `bin/acceptance-mysql-migrate.sh` can be run on a MySQL/MariaDB host to create a temporary utf8mb4 database, run `php artisan migrate --force`, and run `php artisan guard:db-stats`.
+
 ## SQLite to MySQL migration note
 
 For large production servers, create a fresh MySQL database, set `DB_CONNECTION=mysql` and credentials in `.env`, run `php artisan migrate`, and rescan. Existing SQLite findings can be exported from the web panel as CSV before switching. Direct automated SQLite-to-MySQL import is intentionally not performed by the installer to avoid destructive surprises.
