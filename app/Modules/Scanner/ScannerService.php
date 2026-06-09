@@ -14,11 +14,12 @@ use Throwable;
 class ScannerService
 {
     private int $skippedFolders = 0;
+    private int $skippedMedia = 0;
     public function __construct(private ?RuleRepository $rules = null) { $this->rules ??= new RuleRepository(); }
 
     public function scan(string $scopeType = 'full', ?string $scopeValue = null, array $options = []): int
     {
-        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,files_scanned,findings_count,created_at,updated_at) VALUES (?,?,?,?,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,now(),now()]);
+        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,files_scanned,skipped_media,skipped_directories,findings_count,created_at,updated_at) VALUES (?,?,?,?,?,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$this->profile($options),now(),now()]);
         $files = 0; $findings = 0;
         $stop = function (string $signal) use (&$runId, &$files, &$findings): void {
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $signal, now(), $runId]);
@@ -32,14 +33,14 @@ class ScannerService
         try {
             $inv = new InventoryService();
             $sites = match ($scopeType) { 'user' => $inv->refresh($scopeValue, null, $options), 'site' => $inv->refresh(null, $scopeValue, $options), default => $inv->refresh(null, null, $options) };
-            $this->progress($options, sprintf('Scan #%d: %d site(s) selected for %s%s', $runId, count($sites), $scopeType, $scopeValue ? ': '.$scopeValue : ''));
+            $this->progress($options, sprintf('Scan #%d [%s]: %d site(s) selected for %s%s', $runId, $this->profile($options), count($sites), $scopeType, $scopeValue ? ': '.$scopeValue : '')); 
             foreach ($sites as $site) {
                 [$f, $c] = $this->scanSite($site, $runId, $options); $files += $f; $findings += $c;
                 DB::statement('UPDATE sites SET last_scan_at=?, updated_at=? WHERE id=?', [now(), now(), $site['id']]);
             }
             if (!($options['skip_logs'] ?? false)) (new LogAnalyzerService())->analyze();
-            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, updated_at=? WHERE id=?', ['completed', now(), $files, $findings, now(), $runId]);
-            $this->progress($options, "Scan #$runId completed: files=$files findings=$findings skipped_folders={$this->skippedFolders}");
+            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, skipped_media=?, skipped_directories=?, updated_at=? WHERE id=?', ['completed', now(), $files, $findings, $this->skippedMedia, $this->skippedFolders, now(), $runId]);
+            $this->progress($options, "Scan #$runId completed: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_folders={$this->skippedFolders}");
             return $runId;
         } catch (Throwable $e) {
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $e->getMessage(), now(), $runId]);
@@ -59,7 +60,9 @@ class ScannerService
             if ($maxFiles > 0 && $count >= $maxFiles) { $this->progress($options, "Max files reached for {$site['name']}: $maxFiles"); break; }
             if ($maxSeconds > 0 && time() - $start >= $maxSeconds) { $this->progress($options, "Max seconds reached for {$site['name']}: $maxSeconds"); break; }
             if (!$file->isFile() || $file->isLink()) continue;
-            $path = $file->getPathname(); $seen[$path] = true; $count++;
+            $path = $file->getPathname();
+            if (!$this->shouldScanFile($path, $site['path'], $options)) { $this->skippedMedia++; continue; }
+            $seen[$path] = true; $count++;
             $relative = ltrim(str_replace($site['path'], '', $path), '/');
             $pathHash = hash('sha256', $path);
             $previous = DB::first('SELECT * FROM file_snapshots WHERE path_hash=? AND path=?', [$pathHash, $path]);
@@ -72,9 +75,41 @@ class ScannerService
             if ($count % 1000 === 0) $this->progress($options, "Progress {$site['name']}: files=$count findings=$findings elapsed=".(time()-$start).'s');
         }
         if (!$dryRun) foreach (DB::select('SELECT id,path FROM file_snapshots WHERE site_id=? AND is_missing=0', [$site['id']]) as $snap) if (!isset($seen[$snap['path']]) && !file_exists($snap['path'])) DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,updated_at=? WHERE id=?', [now(),now(),$snap['id']]);
-        $this->progress($options, "Finished {$site['name']}: files=$count findings=$findings skipped_folders={$this->skippedFolders} elapsed=".(time()-$start).'s');
+        $this->progress($options, "Finished {$site['name']}: files=$count findings=$findings skipped_media={$this->skippedMedia} skipped_folders={$this->skippedFolders} elapsed=".(time()-$start).'s');
         return [$count, $findings];
     }
+
+
+    private function profile(array $options): string
+    {
+        $profile = strtolower((string)($options['profile'] ?? config('guard.scan_profile', 'fast')));
+        return in_array($profile, ['fast','standard','deep'], true) ? $profile : 'fast';
+    }
+
+    private function shouldScanFile(string $path, string $root, array $options): bool
+    {
+        $profile = $this->profile($options);
+        if ($profile === 'deep') return true;
+        $rel = ltrim(str_replace($root, '', $path), '/');
+        if ($this->isValidationPath($path) || $this->isRootCriticalFile($rel) || $this->isWebConfig($path) || $this->isPhpLike($path)) return true;
+        $lower = strtolower($path);
+        if ($profile === 'fast') return false;
+        if (preg_match('/\.(js|html?|shtml|svg)$/i', $path)) return true;
+        if (@is_executable($path)) return true;
+        if ($this->isOrdinaryMedia($path)) {
+            $recent = @filemtime($path) && @filemtime($path) > time() - 14 * 86400;
+            return $recent && (preg_match('/(shell|cmd|upload|alfa|eval|pki|acme)/i', basename($path)) || $this->hasPhpMarker($path));
+        }
+        return $this->hasPhpMarker($path) || str_contains($lower, '.php.');
+    }
+
+    private function isPhpLike(string $path): bool { return (bool)preg_match('/\.(php|phtml|phar|php5|php7|php8|inc)$/i', $path); }
+    private function isWebConfig(string $path): bool { return (bool)preg_match('/(^|\/)(\.htaccess|\.user\.ini|php\.ini|web\.config|nginx\.conf)$/i', $path); }
+    private function isRootCriticalFile(string $rel): bool { return (bool)preg_match('/(^|\/)(index\.php|wp-config\.php|configuration\.php|config\.php)$/i', $rel); }
+    private function isOrdinaryMedia(string $path): bool { return (bool)preg_match('/\.(jpe?g|png|gif|webp|ico|mp4|webm|avi|mov|pdf)$/i', $path) || (bool)preg_match('/-\d{2,4}x\d{2,4}\.(jpe?g|png|webp)$/i', $path); }
+    private function isValidationPath(string $path): bool { return (bool)preg_match('#/(\.well-known|well-known|pki-validation|acme-challenge)(/|$)#i', $path); }
+    private function fakeWellKnownPath(string $path): bool { return (bool)preg_match('#/well-known(/|$)#i', $path); }
+    private function hasPhpMarker(string $path): bool { if ((@filesize($path) ?: 0) > 1024 * 1024) return false; $c = @file_get_contents($path, false, null, 0, 65536) ?: ''; return stripos($c, '<?php') !== false || stripos($c, '<?=') !== false; }
 
     private function filteredIterator(string $root, array $options): RecursiveCallbackFilterIterator
     {
@@ -128,9 +163,15 @@ class ScannerService
 
     private function detect(array $site, string $path, string $relative, array $m, string $change): array
     {
-        $out = []; $isPhp = (bool)preg_match('/\.(php|phtml|phar|inc)$/i', $path); $allowed = $this->rules->isAllowed($path, $m['sha256']);
+        $out = []; $isPhp = $this->isPhpLike($path); $allowed = $this->rules->isAllowed($path, $m['sha256']);
         if ($this->knownFalsePositivePath($path)) $allowed = true;
-        $content = $isPhp ? @file_get_contents($path, false, null, 0, config('guard.max_file_read_bytes')) ?: '' : '';
+        $content = ($isPhp || $this->isWebConfig($path) || $this->isValidationPath($path)) ? @file_get_contents($path, false, null, 0, config('guard.max_file_read_bytes')) ?: '' : '';
+        $logIds = $this->relatedLogEventIds($path);
+        if ($this->isValidationPath($path) && ($isPhp || $this->isWebConfig($path))) {
+            $risk = $allowed ? 'low' : ($this->fakeWellKnownPath($path) || $isPhp ? 'critical' : 'high');
+            $out[] = ['risk'=>$risk,'type'=>'validation_path_malware','rule_key'=>'validation-path-executable','title'=>'Executable or config file under validation directory','description'=>($this->fakeWellKnownPath($path)?'Fake well-known directory without leading dot is suspicious. ':'').'Validation/ACME paths should not contain PHP loaders or dangerous handlers.','matched'=>[], 'log_ids'=>$logIds];
+        }
+        if ($this->selfReadingPackedLoader($content)) $out[] = ['risk'=>$allowed?'low':'critical','type'=>'packed_loader','rule_key'=>'self-reading-packed-loader','title'=>'Self-reading packed PHP loader','description'=>'Detected eval with gzuncompress/gzinflate and file_get_contents(__FILE__) style obfuscation or appended payload.','matched'=>[], 'log_ids'=>$logIds];
         $matched = [];
         foreach ($this->rules->enabledRules() as $r) {
             $hit = match ($r['pattern_type']) { 'regex' => (bool)@preg_match($r['pattern'], $path), 'path' => fnmatch($r['pattern'], $path, FNM_PATHNAME | FNM_CASEFOLD) || fnmatch($r['pattern'], basename($path), FNM_CASEFOLD), default => $isPhp && stripos($content, $r['pattern']) !== false };
@@ -139,7 +180,6 @@ class ScannerService
         $fnHits = array_values(array_filter($matched, fn($r)=>$r['type']==='suspicious_php'));
         $badHits = array_values(array_filter($matched, fn($r)=>$r['type']==='webshell'));
         $nameOnly = $fnHits && !$badHits && !$this->suspiciousContent($content) && !$this->suspiciousLocation($path) && !$this->malwareLikeName($path);
-        $logIds = $this->relatedLogEventIds($path);
         if ($badHits || count($fnHits) >= 2 || ($fnHits && ($this->suspiciousLocation($path) || $this->malwareLikeName($path)))) {
             $risk = $allowed ? 'low' : ($nameOnly ? 'medium' : $this->maxRisk($matched));
             if ($logIds && !$allowed) $risk = $this->raiseRisk($risk);
@@ -151,6 +191,7 @@ class ScannerService
     }
 
     private function knownFalsePositivePath(string $path): bool { foreach ((require base_path('rules/default-rules.php'))['allowlist'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
+    private function selfReadingPackedLoader(string $content): bool { $n=preg_replace('/[\s"\']*\.\s*["\']?/', '', strtolower($content)); return str_contains($n,'eval') && (str_contains($n,'gzuncompress') || str_contains($n,'gzinflate')) && (str_contains($n,'file_get_contents(__file__)') || str_contains($n,'file_get_contents') || preg_match('/substr\s*\([^)]*-\d+/i',$content)) && (substr_count($content, '?>') > 0 || preg_match('/[\x00-\x08\x0E-\x1F]/', $content)); }
     private function suspiciousContent(string $content): bool { return (bool)preg_match('/(eval\s*\(|assert\s*\(|gzinflate\s*\(|base64_decode\s*\(|shell_exec\s*\(|passthru\s*\(|proc_open\s*\()/i', $content); }
     private function malwareLikeName(string $path): bool { return (bool)preg_match('/\/(gallery888|zebra|mah|compat-kuro|AuthControlIer|access\.policy|session\.manage|field\.api|[a-f0-9]{12,})\.php$/i', $path); }
     private function suspiciousLocation(string $path): bool { foreach ((require base_path('rules/default-rules.php'))['suspicious_paths'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
