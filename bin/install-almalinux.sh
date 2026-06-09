@@ -288,7 +288,11 @@ append_env_value "JURA_HASH_ALL_FILES" "false"
 install_composer_if_needed
 "$PHP_BIN" "$COMPOSER_BIN" install --no-dev --optimize-autoloader
 "$PHP_BIN" artisan key:generate
-"$PHP_BIN" artisan migrate --force
+if ! "$PHP_BIN" artisan migrate --force; then
+  echo "ERROR: Database migration failed; likely a DB connectivity, permissions, charset, or migration/index error." >&2
+  echo "Installer stopped before creating systemd units. Fix the database error, then rerun the installer." >&2
+  exit 1
+fi
 ADMIN_PASSWORD="$(generate_admin_password)"
 "$PHP_BIN" artisan guard:create-admin "$ADMIN_EMAIL" "$ADMIN_PASSWORD" >/dev/null
 "$PHP_BIN" artisan config:cache

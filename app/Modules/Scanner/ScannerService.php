@@ -61,9 +61,10 @@ class ScannerService
             if (!$file->isFile() || $file->isLink()) continue;
             $path = $file->getPathname(); $seen[$path] = true; $count++;
             $relative = ltrim(str_replace($site['path'], '', $path), '/');
-            $previous = DB::first('SELECT * FROM file_snapshots WHERE path=?', [$path]);
+            $pathHash = hash('sha256', $path);
+            $previous = DB::first('SELECT * FROM file_snapshots WHERE path_hash=? AND path=?', [$pathHash, $path]);
             $meta = $this->meta($path, $previous, $relative);
-            $change = $dryRun ? 'dry-run' : $this->snapshot($site['id'], $path, $relative, $meta, $previous);
+            $change = $dryRun ? 'dry-run' : $this->snapshot($site['id'], $path, $pathHash, $relative, $meta, $previous);
             foreach ($this->detect($site, $path, $relative, $meta, $change) as $finding) {
                 if (!$dryRun) $this->upsertFinding($runId, $site['id'], $path, $meta, $finding);
                 $findings++;
@@ -116,12 +117,12 @@ class ScannerService
         return (int)$previous['size'] !== $size || (string)$previous['mtime'] !== (string)$mtime || (string)$previous['permissions'] !== $permissions || (string)$previous['owner'] !== $owner;
     }
 
-    private function snapshot(int $siteId, string $path, string $relative, array $m, ?array $row): string
+    private function snapshot(int $siteId, string $path, string $pathHash, string $relative, array $m, ?array $row): string
     {
         $groupCol = DB::quoteIdentifier('group');
-        if (!$row) { DB::insert("INSERT INTO file_snapshots (site_id,path,relative_path,owner,$groupCol,permissions,size,mtime,sha256,first_seen_at,last_seen_at,is_missing,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?,?)", [$siteId,$path,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['sha256'],now(),now(),now(),now()]); return 'new'; }
+        if (!$row) { DB::insert("INSERT INTO file_snapshots (site_id,path,path_hash,relative_path,owner,$groupCol,permissions,size,mtime,sha256,first_seen_at,last_seen_at,is_missing,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)", [$siteId,$path,$pathHash,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['sha256'],now(),now(),now(),now()]); return 'new'; }
         $changed = ($row['sha256'] !== $m['sha256'] || (string)$row['mtime'] !== (string)$m['mtime'] || (string)$row['permissions'] !== (string)$m['permissions'] || (string)$row['owner'] !== (string)$m['owner'] || (int)$row['size'] !== (int)$m['size']);
-        DB::statement("UPDATE file_snapshots SET site_id=?,relative_path=?,owner=?,$groupCol=?,permissions=?,size=?,mtime=?,sha256=?,last_seen_at=?,last_changed_at=CASE WHEN ? THEN ? ELSE last_changed_at END,is_missing=0,updated_at=? WHERE id=?", [$siteId,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['sha256'],now(),$changed?1:0,now(),now(),$row['id']]);
+        DB::statement("UPDATE file_snapshots SET site_id=?,path_hash=?,relative_path=?,owner=?,$groupCol=?,permissions=?,size=?,mtime=?,sha256=?,last_seen_at=?,last_changed_at=CASE WHEN ? THEN ? ELSE last_changed_at END,is_missing=0,updated_at=? WHERE id=?", [$siteId,$pathHash,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['sha256'],now(),$changed?1:0,now(),now(),$row['id']]);
         return $changed ? 'changed' : 'same';
     }
 
@@ -162,13 +163,15 @@ class ScannerService
     private function upsertFinding(int $runId, int $siteId, string $path, array $m, array $f): void
     {
         $rules = json_encode(array_map(fn($r)=>['name'=>$r['name']??'runtime','risk'=>$r['risk']??$f['risk'],'pattern'=>$r['pattern']??''], $f['matched']), JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+        $pathHash = hash('sha256', $path);
         $fingerprint = hash('sha256', $path.'|'.$f['type'].'|'.($f['rule_key'] ?? '').'|'.($m['sha256'] ?? ''));
-        $ignored = DB::first("SELECT id,sha256 FROM findings WHERE path=? AND type=? AND fingerprint=? AND status='ignored'", [$path,$f['type'],$fingerprint]);
+        $findingHash = hash('sha256', $path.'|'.$f['type'].'|'.($f['rule_key'] ?? '').'|'.$fingerprint);
+        $ignored = DB::first("SELECT id,sha256 FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status='ignored'", [$findingHash,$pathHash,$path]);
         if ($ignored && ($ignored['sha256'] ?? null) === ($m['sha256'] ?? null)) return;
-        $row = DB::first("SELECT id,status FROM findings WHERE path=? AND type=? AND fingerprint=? AND status NOT IN ('ignored','quarantined')", [$path,$f['type'],$fingerprint]);
+        $row = DB::first("SELECT id,status FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status NOT IN ('ignored','quarantined')", [$findingHash,$pathHash,$path]);
         $logIds = json_encode($f['log_ids'] ?? [], JSON_UNESCAPED_SLASHES);
-        if ($row) DB::statement('UPDATE findings SET scan_run_id=?,site_id=?,risk=?,rule_key=?,title=?,description=?,matched_rules=?,related_log_event_ids=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,updated_at=? WHERE id=?', [$runId,$siteId,$f['risk'],$f['rule_key'] ?? null,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),$row['id']]);
-        else DB::insert('INSERT INTO findings (scan_run_id,site_id,path,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$runId,$siteId,$path,$f['risk'],'new',$f['type'],$f['rule_key'] ?? null,$fingerprint,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),now(),now()]);
+        if ($row) DB::statement('UPDATE findings SET scan_run_id=?,site_id=?,path_hash=?,finding_hash=?,risk=?,rule_key=?,title=?,description=?,matched_rules=?,related_log_event_ids=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,updated_at=? WHERE id=?', [$runId,$siteId,$pathHash,$findingHash,$f['risk'],$f['rule_key'] ?? null,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),$row['id']]);
+        else DB::insert('INSERT INTO findings (scan_run_id,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$runId,$siteId,$path,$pathHash,$findingHash,$f['risk'],'new',$f['type'],$f['rule_key'] ?? null,$fingerprint,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),now(),now()]);
     }
 
     private function progress(array $options, string $message): void

@@ -19,7 +19,8 @@ class LogAnalyzerService
             $parsed = $this->parse($lines[$i]); $event = $this->classify($parsed, $lines[$i]);
             if (!$event) continue;
             if (DB::first('SELECT id FROM log_events WHERE log_path=? AND line_number=? AND raw_line=?', [$path, $i+1, $lines[$i]])) continue;
-            DB::insert('INSERT INTO log_events (site_id,log_path,line_number,ip,method,uri,status_code,user_agent,referer,event_type,risk,raw_line,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [null,$path,$i+1,$parsed['ip'],$parsed['method'],$parsed['uri'],$parsed['status'],$parsed['ua'],$parsed['referer'],$event['type'],$event['risk'],$lines[$i],now(),now()]);
+            $uriHash = $parsed['uri'] !== null ? hash('sha256', $parsed['uri']) : null;
+            DB::insert('INSERT INTO log_events (site_id,log_path,line_number,ip,method,uri,uri_hash,status_code,user_agent,referer,event_type,risk,raw_line,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [null,$path,$i+1,$parsed['ip'],$parsed['method'],$parsed['uri'],$uriHash,$parsed['status'],$parsed['ua'],$parsed['referer'],$event['type'],$event['risk'],$lines[$i],now(),now()]);
             $count++;
         }
         return $count;

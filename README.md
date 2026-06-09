@@ -193,6 +193,10 @@ GRANT ALL PRIVILEGES ON jura_server_guard.* TO 'jsg'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
+### MySQL long path indexes
+
+MySQL/MariaDB installs use `utf8mb4` and store long filesystem paths in full for display and exact value storage, but migrations do not index long path columns directly. Instead, `file_snapshots`, `findings`, `quarantine_items`, and suspicious log URI lookups use deterministic SHA-256 hex hash columns such as `path_hash`, `finding_hash`, `original_path_hash`, and `uri_hash`. Optional prefix indexes use only the first 191 characters and are never used for uniqueness. To verify a MySQL/MariaDB host, run `bin/acceptance-mysql-migrate.sh`; it creates a temporary utf8mb4 database, runs `php artisan migrate --force`, then runs `php artisan guard:db-stats`.
+
 ## CSV export and false-positive controls
 
 Findings and Suspicious logs pages include CSV export buttons that preserve current filters. Findings are deduplicated by path/type/rule fingerprint, ignored findings are not recreated unless the file hash changes, and known Joomla/Akeeba/Freemius/Jetpack/SuiteCRM/Regular Labs/OpenCart paths are allowlisted so normal CMS/plugin files are not high/critical by filename alone. High/critical risk is reserved for known IOC strings, webshell callbacks, ALFA_DATA/alfacgiapi, malware-like filenames, risky upload/cache PHP with execution indicators, and suspicious HTTP events linked to the exact file.

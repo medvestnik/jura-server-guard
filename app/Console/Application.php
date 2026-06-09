@@ -50,18 +50,71 @@ class Application
 
     private function ensureSchemaCompatibility(): void
     {
-        $columns = DB::driver() === 'mysql'
-            ? array_column(DB::select('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', ['findings']), 'COLUMN_NAME')
-            : array_column(DB::select('PRAGMA table_info(findings)'), 'name');
-        if (!in_array('fingerprint', $columns, true)) DB::pdo()->exec(DB::driver()==='mysql' ? 'ALTER TABLE findings ADD fingerprint CHAR(64) NULL' : 'ALTER TABLE findings ADD COLUMN fingerprint TEXT NULL');
-        if (!in_array('rule_key', $columns, true)) DB::pdo()->exec(DB::driver()==='mysql' ? 'ALTER TABLE findings ADD rule_key VARCHAR(128) NULL' : 'ALTER TABLE findings ADD COLUMN rule_key TEXT NULL');
-        if (!in_array('related_log_event_ids', $columns, true)) DB::pdo()->exec(DB::driver()==='mysql' ? 'ALTER TABLE findings ADD related_log_event_ids LONGTEXT NULL' : 'ALTER TABLE findings ADD COLUMN related_log_event_ids TEXT NULL');
-        $indexes = DB::driver()==='mysql' ? [
-            'CREATE INDEX file_snapshots_site_id_idx ON file_snapshots(site_id)', 'CREATE INDEX file_snapshots_sha256_idx ON file_snapshots(sha256)', 'CREATE INDEX findings_status_idx ON findings(status)', 'CREATE INDEX findings_risk_idx ON findings(risk)', 'CREATE INDEX findings_site_id_idx ON findings(site_id)', 'CREATE INDEX scan_runs_status_idx ON scan_runs(status)', 'CREATE INDEX log_events_site_id_idx ON log_events(site_id)', 'CREATE INDEX log_events_uri_idx ON log_events(uri)', 'CREATE INDEX log_events_ip_idx ON log_events(ip)', 'CREATE INDEX quarantine_items_original_path_idx ON quarantine_items(original_path)'
+        $driver = DB::driver();
+
+        $this->ensureColumn('file_snapshots', 'path_hash', $driver === 'mysql' ? 'CHAR(64) NULL' : 'TEXT NULL');
+        $this->ensureColumn('findings', 'path_hash', $driver === 'mysql' ? 'CHAR(64) NULL' : 'TEXT NULL');
+        $this->ensureColumn('findings', 'finding_hash', $driver === 'mysql' ? 'CHAR(64) NULL' : 'TEXT NULL');
+        $this->ensureColumn('findings', 'fingerprint', $driver === 'mysql' ? 'CHAR(64) NULL' : 'TEXT NULL');
+        $this->ensureColumn('findings', 'rule_key', $driver === 'mysql' ? 'VARCHAR(128) NULL' : 'TEXT NULL');
+        $this->ensureColumn('findings', 'related_log_event_ids', $driver === 'mysql' ? 'LONGTEXT NULL' : 'TEXT NULL');
+        $this->ensureColumn('quarantine_items', 'original_path_hash', $driver === 'mysql' ? 'CHAR(64) NULL' : 'TEXT NULL');
+        $this->ensureColumn('log_events', 'uri_hash', $driver === 'mysql' ? 'CHAR(64) NULL' : 'TEXT NULL');
+
+        foreach (DB::select('SELECT id,path FROM file_snapshots WHERE path_hash IS NULL OR path_hash = ?', ['']) as $row) DB::statement('UPDATE file_snapshots SET path_hash=? WHERE id=?', [hash('sha256', (string)$row['path']), $row['id']]);
+        foreach (DB::select('SELECT id,path,type,rule_key,fingerprint,sha256 FROM findings WHERE path_hash IS NULL OR path_hash = ? OR finding_hash IS NULL OR finding_hash = ?', ['', '']) as $row) {
+            $path = (string)$row['path'];
+            $type = (string)($row['type'] ?? 'unknown');
+            $rule = (string)($row['rule_key'] ?? '');
+            $fingerprint = (string)($row['fingerprint'] ?? '');
+            if ($fingerprint === '') $fingerprint = hash('sha256', $path.'|'.$type.'|'.$rule.'|'.($row['sha256'] ?? ''));
+            DB::statement('UPDATE findings SET path_hash=?, fingerprint=?, finding_hash=? WHERE id=?', [hash('sha256', $path), $fingerprint, hash('sha256', $path.'|'.$type.'|'.$rule.'|'.$fingerprint), $row['id']]);
+        }
+        foreach (DB::select('SELECT id,original_path FROM quarantine_items WHERE original_path_hash IS NULL OR original_path_hash = ?', ['']) as $row) DB::statement('UPDATE quarantine_items SET original_path_hash=? WHERE id=?', [hash('sha256', (string)$row['original_path']), $row['id']]);
+        foreach (DB::select('SELECT id,uri FROM log_events WHERE uri IS NOT NULL AND (uri_hash IS NULL OR uri_hash = ?)', ['']) as $row) DB::statement('UPDATE log_events SET uri_hash=? WHERE id=?', [hash('sha256', (string)$row['uri']), $row['id']]);
+
+        if ($driver === 'mysql') {
+            foreach (['file_snapshots_path_unique', 'findings_path_idx', 'findings_fingerprint_idx', 'log_events_uri_idx', 'quarantine_items_original_path_idx'] as $index) {
+                try { DB::pdo()->exec("DROP INDEX $index ON " . $this->indexTable($index)); } catch (\Throwable) {}
+            }
+            try { DB::pdo()->exec('ALTER TABLE file_snapshots MODIFY path_hash CHAR(64) NOT NULL'); } catch (\Throwable) {}
+            try { DB::pdo()->exec('ALTER TABLE findings MODIFY path_hash CHAR(64) NOT NULL, MODIFY finding_hash CHAR(64) NOT NULL'); } catch (\Throwable) {}
+        } else {
+            foreach (['file_snapshots_path_unique', 'findings_path_idx', 'findings_fingerprint_idx', 'log_events_uri_idx', 'quarantine_items_original_path_idx'] as $index) {
+                try { DB::pdo()->exec('DROP INDEX IF EXISTS ' . $index); } catch (\Throwable) {}
+            }
+        }
+
+        $indexes = $driver === 'mysql' ? [
+            'CREATE UNIQUE INDEX uniq_file_snapshots_path_hash ON file_snapshots(path_hash)', 'CREATE INDEX idx_file_snapshots_path_prefix ON file_snapshots(path(191))', 'CREATE INDEX file_snapshots_site_id_idx ON file_snapshots(site_id)', 'CREATE INDEX file_snapshots_sha256_idx ON file_snapshots(sha256)', 'CREATE INDEX idx_findings_path_hash ON findings(path_hash)', 'CREATE INDEX idx_findings_path_prefix ON findings(path(191))', 'CREATE INDEX findings_status_idx ON findings(status)', 'CREATE INDEX findings_risk_idx ON findings(risk)', 'CREATE INDEX findings_site_id_idx ON findings(site_id)', 'CREATE INDEX findings_finding_hash_idx ON findings(finding_hash,status)', 'CREATE INDEX findings_scan_run_id_idx ON findings(scan_run_id)', 'CREATE INDEX scan_runs_status_idx ON scan_runs(status)', 'CREATE INDEX log_events_site_id_idx ON log_events(site_id)', 'CREATE INDEX log_events_uri_hash_idx ON log_events(uri_hash)', 'CREATE INDEX log_events_uri_prefix_idx ON log_events(uri(191))', 'CREATE INDEX log_events_ip_idx ON log_events(ip)', 'CREATE INDEX idx_quarantine_original_path_hash ON quarantine_items(original_path_hash)', 'CREATE INDEX quarantine_items_original_path_prefix_idx ON quarantine_items(original_path(191))', 'CREATE INDEX quarantine_items_finding_id_idx ON quarantine_items(finding_id)'
         ] : [
-            'CREATE UNIQUE INDEX IF NOT EXISTS file_snapshots_path_unique ON file_snapshots(path)', 'CREATE INDEX IF NOT EXISTS file_snapshots_site_id_idx ON file_snapshots(site_id)', 'CREATE INDEX IF NOT EXISTS file_snapshots_sha256_idx ON file_snapshots(sha256)', 'CREATE INDEX IF NOT EXISTS findings_path_idx ON findings(path)', 'CREATE INDEX IF NOT EXISTS findings_status_idx ON findings(status)', 'CREATE INDEX IF NOT EXISTS findings_risk_idx ON findings(risk)', 'CREATE INDEX IF NOT EXISTS findings_site_id_idx ON findings(site_id)', 'CREATE INDEX IF NOT EXISTS findings_fingerprint_idx ON findings(path,type,fingerprint,status)', 'CREATE INDEX IF NOT EXISTS scan_runs_status_idx ON scan_runs(status)', 'CREATE INDEX IF NOT EXISTS log_events_site_id_idx ON log_events(site_id)', 'CREATE INDEX IF NOT EXISTS log_events_uri_idx ON log_events(uri)', 'CREATE INDEX IF NOT EXISTS log_events_ip_idx ON log_events(ip)', 'CREATE INDEX IF NOT EXISTS quarantine_items_original_path_idx ON quarantine_items(original_path)'
+            'CREATE UNIQUE INDEX IF NOT EXISTS uniq_file_snapshots_path_hash ON file_snapshots(path_hash)', 'CREATE INDEX IF NOT EXISTS idx_file_snapshots_path_prefix ON file_snapshots(substr(path,1,191))', 'CREATE INDEX IF NOT EXISTS file_snapshots_site_id_idx ON file_snapshots(site_id)', 'CREATE INDEX IF NOT EXISTS file_snapshots_sha256_idx ON file_snapshots(sha256)', 'CREATE INDEX IF NOT EXISTS idx_findings_path_hash ON findings(path_hash)', 'CREATE INDEX IF NOT EXISTS idx_findings_path_prefix ON findings(substr(path,1,191))', 'CREATE INDEX IF NOT EXISTS findings_status_idx ON findings(status)', 'CREATE INDEX IF NOT EXISTS findings_risk_idx ON findings(risk)', 'CREATE INDEX IF NOT EXISTS findings_site_id_idx ON findings(site_id)', 'CREATE INDEX IF NOT EXISTS findings_finding_hash_idx ON findings(finding_hash,status)', 'CREATE INDEX IF NOT EXISTS scan_runs_status_idx ON scan_runs(status)', 'CREATE INDEX IF NOT EXISTS log_events_site_id_idx ON log_events(site_id)', 'CREATE INDEX IF NOT EXISTS log_events_uri_hash_idx ON log_events(uri_hash)', 'CREATE INDEX IF NOT EXISTS log_events_uri_prefix_idx ON log_events(substr(uri,1,191))', 'CREATE INDEX IF NOT EXISTS log_events_ip_idx ON log_events(ip)', 'CREATE INDEX IF NOT EXISTS idx_quarantine_original_path_hash ON quarantine_items(original_path_hash)', 'CREATE INDEX IF NOT EXISTS quarantine_items_original_path_prefix_idx ON quarantine_items(substr(original_path,1,191))'
         ];
         foreach ($indexes as $sql) { try { DB::pdo()->exec($sql); } catch (\Throwable) {} }
+    }
+
+    private function ensureColumn(string $table, string $column, string $definition): void
+    {
+        if (in_array($column, $this->columns($table), true)) return;
+        DB::pdo()->exec('ALTER TABLE ' . $table . ' ADD COLUMN ' . $column . ' ' . $definition);
+    }
+
+    private function columns(string $table): array
+    {
+        return DB::driver() === 'mysql'
+            ? array_column(DB::select('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', [$table]), 'COLUMN_NAME')
+            : array_column(DB::select('PRAGMA table_info(' . $table . ')'), 'name');
+    }
+
+    private function indexTable(string $index): string
+    {
+        return match (true) {
+            str_starts_with($index, 'file_snapshots') => 'file_snapshots',
+            str_starts_with($index, 'findings') => 'findings',
+            str_starts_with($index, 'log_events') => 'log_events',
+            str_starts_with($index, 'quarantine_items') => 'quarantine_items',
+            default => 'sites',
+        };
     }
 
     private function seedRules(): int { (new RuleRepository())->seedDefaults(); echo "Default rules and allowlist seeded.\n"; return 0; }
