@@ -200,3 +200,85 @@ MySQL/MariaDB installs use `utf8mb4` and store long filesystem paths in full for
 ## CSV export and false-positive controls
 
 Findings and Suspicious logs pages include CSV export buttons that preserve current filters. Findings are deduplicated by path/type/rule fingerprint, ignored findings are not recreated unless the file hash changes, and known Joomla/Akeeba/Freemius/Jetpack/SuiteCRM/Regular Labs/OpenCart paths are allowlisted so normal CMS/plugin files are not high/critical by filename alone. High/critical risk is reserved for known IOC strings, webshell callbacks, ALFA_DATA/alfacgiapi, malware-like filenames, risky upload/cache PHP with execution indicators, and suspicious HTTP events linked to the exact file.
+
+## Production incident-response improvements
+
+### Dashboard log details
+
+The dashboard `Recent suspicious log events` table now separates `Date/Time`, `IP`, `Method`, `URI`, and `Raw / Actions`. Long URIs and raw log lines are shortened in the table to preserve layout, but each event can be expanded with **Details** and copied from the browser. Nginx error-log style lines such as `client: 172.70.142.128` and `request: POST ...` are parsed so the IP column contains the real client IP instead of a date fragment.
+
+### Scan profiles
+
+Jura Server Guard supports three scan profiles:
+
+* `fast` — default for dashboard/timer scans. Prioritizes PHP-like files, web config files, root critical files, `.well-known`, fake `well-known`, `pki-validation`, `acme-challenge`, uploads PHP, plugins, themes, and recently relevant high-risk locations. Ordinary media and generated WordPress thumbnails are skipped and not broadly hashed.
+* `standard` — balanced manual investigation. Adds JS/HTML, suspicious uploads, executable files, extension/content mismatches, PHP markers in non-PHP files, and suspicious recently modified media while still avoiding normal media churn.
+* `deep` — manual full audit. Includes all files including media, archives, and binary/polyglot candidates. Do not use this as the default timer profile on large production sites.
+
+Environment defaults:
+
+```env
+JURA_SCAN_PROFILE=fast
+JURA_TIMER_SCAN_PROFILE=fast
+```
+
+CLI examples:
+
+```bash
+php artisan guard:scan --profile=fast
+php artisan guard:scan-user zao --profile=fast
+php artisan guard:scan-site /var/www/zao/data/www/example.com --profile=fast
+php artisan guard:scan-site /var/www/zao/data/www/example.com --profile=standard
+php artisan guard:scan-site /var/www/zao/data/www/example.com --profile=deep
+```
+
+The dashboard, sites page, and users page provide scan controls with `fast`, `standard`, and `deep` profile selection. Scan history displays profile, scope, status, scanned files, skipped media, skipped directories, findings, and elapsed time.
+
+### Stronger malware rules
+
+Fast and standard scans now flag PHP-like files and suspicious `.htaccess`/handler config under validation paths:
+
+* `/.well-known/`
+* `/well-known/` (fake directory without leading dot)
+* `/pki-validation/`
+* `/acme-challenge/`
+
+The scanner also detects self-reading packed loaders that combine `eval`, `gzuncompress`/`gzinflate`, `file_get_contents(__FILE__)`-style obfuscation, negative `substr()` offsets, or appended compressed/binary payloads.
+
+### ISPmanager and custom backup browser
+
+Backup settings are available under **Settings → Backups**:
+
+```env
+JURA_BACKUP_INTEGRATION_ENABLED=true
+JURA_BACKUP_PROVIDER=ispmanager
+JURA_ISPMANAGER_DETECTED=true
+JURA_BACKUP_ROOT=/var/backup
+JURA_BACKUP_BROWSER_ENABLED=true
+JURA_BACKUP_RESTORE_ENABLED=false
+JURA_RESTORE_CURRENT_FILE_TO_QUARANTINE=true
+```
+
+Providers:
+
+* `ISPmanager` — defaults to `/var/backup`, detects `/usr/local/mgr5` and executable ISPmanager-related tools when present.
+* `Custom backup folder` — uses the configured backup root path for manual backup trees.
+* `Disabled` — hides operational use until enabled.
+
+Web restore is disabled by default. When restore is disabled, the backup page shows the exact CLI command instead of replacing files from the web UI.
+
+Backup CLI examples:
+
+```bash
+php artisan guard:backup-detect
+php artisan guard:backups:list-users
+php artisan guard:backups:list --user=zao
+php artisan guard:backups:find-file --path=/var/www/zao/data/www/zaodessu.com.ua/index.php
+php artisan guard:backups:preview --path=/var/www/zao/data/www/zaodessu.com.ua/index.php --date=2026-05-30
+php artisan guard:backups:diff --path=/var/www/zao/data/www/zaodessu.com.ua/index.php --date=2026-05-30
+php artisan guard:backups:restore-file --path=/var/www/zao/data/www/zaodessu.com.ua/index.php --date=2026-05-30
+```
+
+Restore safety rules in the first version are intentionally conservative: only a selected file can be restored; paths must stay under `/var/www/{user}/data/www/...`; `..` paths and unsafe symlink targets are rejected; current files are copied to Jura quarantine before replacement; restored permissions are set to `0644`; ownership is restored to the ISPmanager user where possible; and every restore is logged in `restore_actions`.
+
+Differential, incremental, and multipart backups are surfaced from `.info` metadata and directory/archive naming where available. Native ISPmanager tooling should be preferred for large archives and complete differential-chain resolution; the fallback browser performs safe selective browsing and avoids whole-site extraction.
