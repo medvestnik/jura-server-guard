@@ -13,13 +13,13 @@ use Throwable;
 
 class ScannerService
 {
-    private int $skippedFolders = 0;
+    private int $skippedDirectories = 0;
     private int $skippedMedia = 0;
     public function __construct(private ?RuleRepository $rules = null) { $this->rules ??= new RuleRepository(); }
 
     public function scan(string $scopeType = 'full', ?string $scopeValue = null, array $options = []): int
     {
-        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,files_scanned,skipped_media,skipped_directories,skipped_folders,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,0,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$this->profile($options),now(),now()]);
+        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,files_scanned,skipped_media,skipped_directories,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$this->profile($options),now(),now()]);
         $files = 0; $findings = 0;
         $stop = function (string $signal) use (&$runId, &$files, &$findings): void {
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $findings, $signal, now(), $runId]);
@@ -39,8 +39,8 @@ class ScannerService
                 DB::statement('UPDATE sites SET last_scan_at=?, updated_at=? WHERE id=?', [now(), now(), $site['id']]);
             }
             if (!($options['skip_logs'] ?? false)) (new LogAnalyzerService())->analyze();
-            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, skipped_folders=?, updated_at=? WHERE id=?', ['completed', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedFolders, $this->skippedFolders, now(), $runId]);
-            $this->progress($options, "Scan #$runId completed: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_folders={$this->skippedFolders}");
+            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, updated_at=? WHERE id=?', ['completed', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, now(), $runId]);
+            $this->progress($options, "Scan #$runId completed: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories}");
             return $runId;
         } catch (Throwable $e) {
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $findings, $e->getMessage(), now(), $runId]);
@@ -75,7 +75,7 @@ class ScannerService
             if ($count % 1000 === 0) $this->progress($options, "Progress {$site['name']}: files=$count findings=$findings elapsed=".(time()-$start).'s');
         }
         if (!$dryRun) foreach (DB::select('SELECT id,path FROM file_snapshots WHERE site_id=? AND is_missing=0', [$site['id']]) as $snap) if (!isset($seen[$snap['path']]) && !file_exists($snap['path'])) DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,updated_at=? WHERE id=?', [now(),now(),$snap['id']]);
-        $this->progress($options, "Finished {$site['name']}: files=$count findings=$findings skipped_media={$this->skippedMedia} skipped_folders={$this->skippedFolders} elapsed=".(time()-$start).'s');
+        $this->progress($options, "Finished {$site['name']}: files=$count findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories} elapsed=".(time()-$start).'s');
         return [$count, $findings];
     }
 
@@ -123,7 +123,7 @@ class ScannerService
             if (!($options['include_storage'] ?? config('guard.scan_storage_by_default')) && $lower === 'storage') $skip = true;
             if (!($options['include_backups'] ?? false) && (str_contains($lower, 'backup') || str_contains($lower, 'bak'))) $skip = true;
             foreach (config('guard.exclude_paths') as $pattern) if (fnmatch($pattern, $path.'/', FNM_PATHNAME|FNM_CASEFOLD)) $skip = true;
-            if ($skip) { $this->skippedFolders++; return false; }
+            if ($skip) { $this->skippedDirectories++; return false; }
             return true;
         });
     }
