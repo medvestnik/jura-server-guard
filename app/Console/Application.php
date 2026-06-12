@@ -66,7 +66,6 @@ class Application
         $this->ensureColumn('scan_runs', 'files_scanned', $driver === 'mysql' ? 'BIGINT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0');
         $this->ensureColumn('scan_runs', 'skipped_media', $driver === 'mysql' ? 'BIGINT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0');
         $this->ensureColumn('scan_runs', 'skipped_directories', $driver === 'mysql' ? 'BIGINT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0');
-        $this->ensureColumn('scan_runs', 'skipped_folders', $driver === 'mysql' ? 'BIGINT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0');
         $this->ensureColumn('scan_runs', 'findings_count', $driver === 'mysql' ? 'BIGINT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0');
         $this->ensureColumn('scan_runs', 'findings_new', $driver === 'mysql' ? 'BIGINT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0');
         $this->ensureColumn('scan_runs', 'scope_type', $driver === 'mysql' ? "VARCHAR(32) NOT NULL DEFAULT 'full'" : "TEXT NOT NULL DEFAULT 'full'");
@@ -112,10 +111,6 @@ class Application
     private function backfillScanRunCompatibilityColumns(): void
     {
         $columns = $this->columns('scan_runs');
-        if (in_array('skipped_folders', $columns, true) && in_array('skipped_directories', $columns, true)) {
-            DB::statement('UPDATE scan_runs SET skipped_folders = skipped_directories WHERE COALESCE(skipped_folders, 0) = 0 AND COALESCE(skipped_directories, 0) <> 0');
-            DB::statement('UPDATE scan_runs SET skipped_directories = skipped_folders WHERE COALESCE(skipped_directories, 0) = 0 AND COALESCE(skipped_folders, 0) <> 0');
-        }
         if (in_array('findings_new', $columns, true) && in_array('findings_count', $columns, true)) {
             DB::statement('UPDATE scan_runs SET findings_new = findings_count WHERE COALESCE(findings_new, 0) = 0 AND COALESCE(findings_count, 0) <> 0');
             DB::statement('UPDATE scan_runs SET findings_count = findings_new WHERE COALESCE(findings_count, 0) = 0 AND COALESCE(findings_new, 0) <> 0');
