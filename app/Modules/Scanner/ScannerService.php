@@ -19,10 +19,10 @@ class ScannerService
 
     public function scan(string $scopeType = 'full', ?string $scopeValue = null, array $options = []): int
     {
-        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,files_scanned,skipped_media,skipped_directories,findings_count,created_at,updated_at) VALUES (?,?,?,?,?,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$this->profile($options),now(),now()]);
+        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,files_scanned,skipped_media,skipped_directories,skipped_folders,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,0,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$this->profile($options),now(),now()]);
         $files = 0; $findings = 0;
         $stop = function (string $signal) use (&$runId, &$files, &$findings): void {
-            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $signal, now(), $runId]);
+            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $findings, $signal, now(), $runId]);
             exit(130);
         };
         if (function_exists('pcntl_async_signals')) {
@@ -39,11 +39,11 @@ class ScannerService
                 DB::statement('UPDATE sites SET last_scan_at=?, updated_at=? WHERE id=?', [now(), now(), $site['id']]);
             }
             if (!($options['skip_logs'] ?? false)) (new LogAnalyzerService())->analyze();
-            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, skipped_media=?, skipped_directories=?, updated_at=? WHERE id=?', ['completed', now(), $files, $findings, $this->skippedMedia, $this->skippedFolders, now(), $runId]);
+            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, skipped_folders=?, updated_at=? WHERE id=?', ['completed', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedFolders, $this->skippedFolders, now(), $runId]);
             $this->progress($options, "Scan #$runId completed: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_folders={$this->skippedFolders}");
             return $runId;
         } catch (Throwable $e) {
-            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $e->getMessage(), now(), $runId]);
+            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $findings, $e->getMessage(), now(), $runId]);
             throw $e;
         }
     }
@@ -163,15 +163,16 @@ class ScannerService
 
     private function detect(array $site, string $path, string $relative, array $m, string $change): array
     {
-        $out = []; $isPhp = $this->isPhpLike($path); $allowed = $this->rules->isAllowed($path, $m['sha256']);
-        if ($this->knownFalsePositivePath($path)) $allowed = true;
+        $out = []; $isPhp = $this->isPhpLike($path); $explicitlyAllowed = $this->rules->isAllowed($path, $m['sha256']);
         $content = ($isPhp || $this->isWebConfig($path) || $this->isValidationPath($path)) ? @file_get_contents($path, false, null, 0, config('guard.max_file_read_bytes')) ?: '' : '';
+        $loaderEvidence = $this->selfReadingPackedLoaderEvidence($content);
+        $allowed = $explicitlyAllowed || ($this->knownFalsePositivePath($path) && !$loaderEvidence);
         $logIds = $this->relatedLogEventIds($path);
         if ($this->isValidationPath($path) && ($isPhp || $this->isWebConfig($path))) {
             $risk = $allowed ? 'low' : ($this->fakeWellKnownPath($path) || $isPhp ? 'critical' : 'high');
             $out[] = ['risk'=>$risk,'type'=>'validation_path_malware','rule_key'=>'validation-path-executable','title'=>'Executable or config file under validation directory','description'=>($this->fakeWellKnownPath($path)?'Fake well-known directory without leading dot is suspicious. ':'').'Validation/ACME paths should not contain PHP loaders or dangerous handlers.','matched'=>[], 'log_ids'=>$logIds];
         }
-        if ($this->selfReadingPackedLoader($content)) $out[] = ['risk'=>$allowed?'low':'critical','type'=>'packed_loader','rule_key'=>'self-reading-packed-loader','title'=>'Self-reading packed PHP loader','description'=>'Detected eval with gzuncompress/gzinflate and file_get_contents(__FILE__) style obfuscation or appended payload.','matched'=>[], 'log_ids'=>$logIds];
+        if ($loaderEvidence) $out[] = ['risk'=>$allowed?'low':'critical','type'=>'packed_loader','rule_key'=>'self-reading-packed-loader','title'=>'Self-reading packed PHP loader','description'=>'Detected eval with gzuncompress/gzinflate, self-reading file_get_contents(__FILE__), and a negative substr offset or appended binary/compressed payload.','matched'=>[$loaderEvidence], 'log_ids'=>$logIds];
         $matched = [];
         foreach ($this->rules->enabledRules() as $r) {
             $hit = match ($r['pattern_type']) { 'regex' => (bool)@preg_match($r['pattern'], $path), 'path' => fnmatch($r['pattern'], $path, FNM_PATHNAME | FNM_CASEFOLD) || fnmatch($r['pattern'], basename($path), FNM_CASEFOLD), default => $isPhp && stripos($content, $r['pattern']) !== false };
@@ -191,7 +192,101 @@ class ScannerService
     }
 
     private function knownFalsePositivePath(string $path): bool { foreach ((require base_path('rules/default-rules.php'))['allowlist'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
-    private function selfReadingPackedLoader(string $content): bool { $n=preg_replace('/[\s"\']*\.\s*["\']?/', '', strtolower($content)); return str_contains($n,'eval') && (str_contains($n,'gzuncompress') || str_contains($n,'gzinflate')) && (str_contains($n,'file_get_contents(__file__)') || str_contains($n,'file_get_contents') || preg_match('/substr\s*\([^)]*-\d+/i',$content)) && (substr_count($content, '?>') > 0 || preg_match('/[\x00-\x08\x0E-\x1F]/', $content)); }
+    private function selfReadingPackedLoaderEvidence(string $content): ?array
+    {
+        if ($content === '') return null;
+        $code = $this->phpWithoutComments($content);
+        $normalized = strtolower($this->normalizeConcatenatedStrings($code));
+        $compact = preg_replace('/\s+/', '', $normalized);
+
+        $eval = (bool)preg_match('/\beval\s*\(/i', $normalized);
+        $gzAliases = $this->functionAliases($normalized, ['gzuncompress', 'gzinflate']);
+        $fileAliases = $this->functionAliases($normalized, ['file_get_contents']);
+        $gz = (bool)preg_match('/\b(?:gzuncompress|gzinflate)\s*\(/i', $normalized) || (bool)preg_match('/\(?\s*[\'\"](?:gzuncompress|gzinflate)[\'\"]\s*\)?\s*\(/i', $normalized) || $this->hasVariableFunctionCall($normalized, $gzAliases);
+        $selfRead = str_contains($compact, 'file_get_contents(__file__)') || (bool)preg_match('/\(?\s*[\'\"]file_get_contents[\'\"]\s*\)?\s*\(\s*__file__\s*\)/i', $normalized);
+        foreach ($fileAliases as $alias) {
+            if (preg_match('/\$' . preg_quote($alias, '/') . '\s*\(\s*__file__\s*\)/i', $normalized)) { $selfRead = true; break; }
+        }
+        $negativeSubstr = (bool)preg_match('/\bsubstr\s*\([^;]*,\s*-\d+/is', $normalized);
+        $appendedPayload = $this->hasAppendedCompressedPayload($content);
+
+        $indicators = [
+            'eval' => $eval,
+            'compressed_decoder' => $gz,
+            'self_reading_file_get_contents___FILE__' => $selfRead,
+            'negative_substr_offset' => $negativeSubstr,
+            'appended_binary_or_compressed_payload' => $appendedPayload,
+        ];
+        if (!$eval || !$gz || !$selfRead || (!$negativeSubstr && !$appendedPayload)) return null;
+
+        return [
+            'name' => 'self-reading-packed-loader',
+            'risk' => 'critical',
+            'pattern' => 'eval + gzuncompress/gzinflate + file_get_contents(__FILE__) + negative substr offset or appended binary/compressed payload',
+            'snippet' => $this->matchedSnippet($code),
+            'why' => 'Strong self-reading packed loader indicators were present together; standalone eval, gzip helpers, file_get_contents, and substr are not enough.',
+            'indicators' => $indicators,
+        ];
+    }
+
+    private function phpWithoutComments(string $content): string
+    {
+        if (!str_contains($content, '<?')) $content = "<?php\n" . $content;
+        $out = '';
+        foreach (@token_get_all($content) ?: [] as $token) {
+            if (is_array($token)) {
+                if (in_array($token[0], [T_COMMENT, T_DOC_COMMENT], true)) continue;
+                $out .= $token[1];
+            } else {
+                $out .= $token;
+            }
+        }
+        return $out;
+    }
+
+    private function normalizeConcatenatedStrings(string $code): string
+    {
+        $previous = null;
+        while ($previous !== $code) {
+            $previous = $code;
+            $code = preg_replace_callback('/([\'\"])([^\'\"]*)\1\s*\.\s*([\'\"])([^\'\"]*)\3/s', fn($m) => $m[1] . $m[2] . $m[4] . $m[1], $code) ?? $code;
+        }
+        return $code;
+    }
+
+    private function functionAliases(string $code, array $functions): array
+    {
+        $aliases = [];
+        $quoted = implode('|', array_map(fn($f) => preg_quote($f, '/'), $functions));
+        if (preg_match_all('/\$([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*[\'\"](' . $quoted . ')[\'\"]/i', $code, $matches)) {
+            foreach ($matches[1] as $alias) $aliases[] = strtolower($alias);
+        }
+        return array_values(array_unique($aliases));
+    }
+
+    private function hasVariableFunctionCall(string $code, array $aliases): bool
+    {
+        foreach ($aliases as $alias) if (preg_match('/\$' . preg_quote($alias, '/') . '\s*\(/i', $code)) return true;
+        return false;
+    }
+
+    private function hasAppendedCompressedPayload(string $content): bool
+    {
+        $pos = strrpos($content, '?>');
+        if ($pos === false) return false;
+        $tail = substr($content, $pos + 2);
+        if (trim($tail) === '') return false;
+        return (bool)preg_match('/[\x00-\x08\x0E-\x1F\x7F-\xFF]/', $tail);
+    }
+
+    private function matchedSnippet(string $code): string
+    {
+        $pos = stripos($code, 'eval');
+        if ($pos === false) $pos = 0;
+        $snippet = substr($code, max(0, $pos - 160), 420);
+        $snippet = preg_replace('/[\x00-\x08\x0E-\x1F\x7F-\xFF]/', '.', $snippet) ?? $snippet;
+        return trim($snippet);
+    }
     private function suspiciousContent(string $content): bool { return (bool)preg_match('/(eval\s*\(|assert\s*\(|gzinflate\s*\(|base64_decode\s*\(|shell_exec\s*\(|passthru\s*\(|proc_open\s*\()/i', $content); }
     private function malwareLikeName(string $path): bool { return (bool)preg_match('/\/(gallery888|zebra|mah|compat-kuro|AuthControlIer|access\.policy|session\.manage|field\.api|[a-f0-9]{12,})\.php$/i', $path); }
     private function suspiciousLocation(string $path): bool { foreach ((require base_path('rules/default-rules.php'))['suspicious_paths'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
@@ -203,7 +298,7 @@ class ScannerService
 
     private function upsertFinding(int $runId, int $siteId, string $path, array $m, array $f): void
     {
-        $rules = json_encode(array_map(fn($r)=>['name'=>$r['name']??'runtime','risk'=>$r['risk']??$f['risk'],'pattern'=>$r['pattern']??''], $f['matched']), JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+        $rules = json_encode(array_map(fn($r)=>array_filter(['name'=>$r['name']??'runtime','risk'=>$r['risk']??$f['risk'],'pattern'=>$r['pattern']??'','snippet'=>$r['snippet']??null,'why'=>$r['why']??null,'indicators'=>$r['indicators']??null], fn($v)=>$v !== null), $f['matched']), JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
         $pathHash = hash('sha256', $path);
         $fingerprint = hash('sha256', $path.'|'.$f['type'].'|'.($f['rule_key'] ?? '').'|'.($m['sha256'] ?? ''));
         $findingHash = hash('sha256', $path.'|'.$f['type'].'|'.($f['rule_key'] ?? '').'|'.$fingerprint);
