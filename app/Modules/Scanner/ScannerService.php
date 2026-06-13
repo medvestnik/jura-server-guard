@@ -16,8 +16,7 @@ class ScannerService
 {
     private int $skippedDirectories = 0;
     private int $skippedMedia = 0;
-    private int $lastDbProgressAt = 0;
-    private int $lastDbProgressFiles = 0;
+    private bool $limitReached = false;
     public function __construct(private ?RuleRepository $rules = null) { $this->rules ??= new RuleRepository(); }
 
     public function scan(string $scopeType = 'full', ?string $scopeValue = null, array $options = []): int
@@ -45,8 +44,10 @@ class ScannerService
                 DB::statement('UPDATE sites SET last_scan_at=?, updated_at=? WHERE id=?', [now(), now(), $site['id']]);
             }
             if (!($options['skip_logs'] ?? false)) (new LogAnalyzerService())->analyze();
-            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, current_site=NULL, current_path=NULL, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', ['completed', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, now(), 'Scan completed', now(), $runId]);
-            $this->progress($options, "Scan #$runId completed: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories}");
+            $status = $this->limitReached ? 'completed_with_limit' : 'completed';
+            $error = $this->limitReached ? 'Stopped by max files or max seconds; scan may be incomplete.' : null;
+            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, updated_at=? WHERE id=?', [$status, now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $error, now(), $runId]);
+            $this->progress($options, "Scan #$runId $status: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories}");
             return $runId;
         } catch (Throwable $e) {
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $e->getMessage(), now(), 'Scan failed', now(), $runId]);
@@ -64,8 +65,8 @@ class ScannerService
         $this->updateRunProgress($runId, $baseFiles, $baseFindings, $site['name'] ?? null, $site['path'] ?? null, "Scanning site {$site['name']}", true);
         $it = new RecursiveIteratorIterator($this->filteredIterator($site['path'], $options));
         foreach ($it as $file) {
-            if ($maxFiles > 0 && $count >= $maxFiles) { $this->progress($options, "Max files reached for {$site['name']}: $maxFiles"); break; }
-            if ($maxSeconds > 0 && time() - $start >= $maxSeconds) { $this->progress($options, "Max seconds reached for {$site['name']}: $maxSeconds"); break; }
+            if ($maxFiles > 0 && $count >= $maxFiles) { $this->limitReached = true; $this->progress($options, "Max files reached for {$site['name']}: $maxFiles"); break; }
+            if ($maxSeconds > 0 && time() - $start >= $maxSeconds) { $this->limitReached = true; $this->progress($options, "Max seconds reached for {$site['name']}: $maxSeconds"); break; }
             if (!$file->isFile() || $file->isLink()) continue;
             $path = $file->getPathname();
             if (!$this->shouldScanFile($path, $site['path'], $options)) { $this->skippedMedia++; $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $path, 'Skipping non-eligible/media file'); continue; }
@@ -131,7 +132,7 @@ class ScannerService
         if ($this->isValidationPath($path) || $this->isRootCriticalFile($rel) || $this->isWebConfig($path) || $this->isPhpLike($path)) return true;
         $lower = strtolower($path);
         if ($profile === 'fast') return false;
-        if (preg_match('/\.(js|html?|shtml|svg)$/i', $path)) return true;
+        if (preg_match('/\.(js|html?|shtml|svg|txt)$/i', $path)) return true;
         if (@is_executable($path)) return true;
         if ($this->isOrdinaryMedia($path)) {
             $recent = @filemtime($path) && @filemtime($path) > time() - 14 * 86400;
@@ -201,13 +202,18 @@ class ScannerService
     private function detect(array $site, string $path, string $relative, array $m, string $change): array
     {
         $out = []; $isPhp = $this->isPhpLike($path); $explicitlyAllowed = $this->rules->isAllowed($path, $m['sha256']);
-        $content = ($isPhp || $this->isWebConfig($path) || $this->isValidationPath($path)) ? @file_get_contents($path, false, null, 0, config('guard.max_file_read_bytes')) ?: '' : '';
+        $content = ($isPhp || $this->isWebConfig($path) || $this->isValidationPath($path) || $this->isSeoScannable($path)) ? @file_get_contents($path, false, null, 0, config('guard.max_file_read_bytes')) ?: '' : '';
         $loaderEvidence = $this->selfReadingPackedLoaderEvidence($content);
         $allowed = $explicitlyAllowed || ($this->knownFalsePositivePath($path) && !$loaderEvidence);
         $logIds = $this->relatedLogEventIds($path);
         if ($this->isValidationPath($path) && ($isPhp || $this->isWebConfig($path))) {
             $risk = $allowed ? 'low' : ($this->fakeWellKnownPath($path) || $isPhp ? 'critical' : 'high');
             $out[] = ['risk'=>$risk,'type'=>'validation_path_malware','rule_key'=>'validation-path-executable','title'=>'Executable or config file under validation directory','description'=>($this->fakeWellKnownPath($path)?'Fake well-known directory without leading dot is suspicious. ':'').'Validation/ACME paths should not contain PHP loaders or dangerous handlers.','matched'=>[], 'log_ids'=>$logIds];
+        }
+
+        if ($seo = $this->seoDoorwayEvidence($path, $relative, $content, $change)) {
+            $risk = $allowed ? 'low' : $seo['risk'];
+            $out[] = ['risk'=>$risk,'type'=>'seo_spam','rule_key'=>$seo['rule_key'],'title'=>$seo['title'],'description'=>$seo['description'],'matched'=>$seo['matched'], 'log_ids'=>$logIds];
         }
         if ($loaderEvidence) $out[] = ['risk'=>$allowed?'low':'critical','type'=>'packed_loader','rule_key'=>'self-reading-packed-loader','title'=>'Self-reading packed PHP loader','description'=>'Detected eval with gzuncompress/gzinflate, self-reading file_get_contents(__FILE__), and a negative substr offset or appended binary/compressed payload.','matched'=>[$loaderEvidence], 'log_ids'=>$logIds];
         $matched = [];
@@ -228,6 +234,36 @@ class ScannerService
         return $out;
     }
 
+
+    private function isSeoScannable(string $path): bool { return (bool)preg_match('/\.(php|html?|txt)$/i', $path); }
+    private function seoDoorwayEvidence(string $path, string $relative, string $content, string $change): ?array
+    {
+        $rootDepth = substr_count(trim($relative, '/'), '/');
+        $name = basename($path);
+        if (preg_match('/^google[a-z0-9_-]*\.html$/i', $name) && $rootDepth === 0) {
+            return ['risk'=>$change === 'new' ? 'high' : 'medium','rule_key'=>'suspicious-google-verification','title'=>'Suspicious Google site verification file','description'=>'Suspicious Google Search Console verification file added or present in web root. Verify ownership change with the site owner.','matched'=>[['name'=>'google-verification-root','risk'=>'high','pattern'=>'google*.html in web root','snippet'=>$name]]];
+        }
+        if ($content === '' || !$this->isSeoScannable($path)) return null;
+        $hay = strtolower($content.' '.$relative);
+        $kw = ['paris88','situs gacor','mahjong wins','rupiah','judi','slot','taruhan','gacor','daftar','login'];
+        $kwHits = array_values(array_filter($kw, fn($k)=>str_contains($hay, $k)));
+        $extHits = [];
+        if (preg_match_all('#https?://([^/"\'<>\s]+)#i', $content, $m)) {
+            foreach ($m[1] as $host) if (preg_match('/(pages\.dev|casino|slot|judi|gacor|paris88|mahjong|cloudflare)/i', $host)) $extHits[] = $host;
+        }
+        $seoDir = (bool)preg_match('#(^|/)(denza|casino|slot|mahjong)(/|$)#i', $relative);
+        $staticPhp = (bool)preg_match('/\.php$/i', $path) && strlen($content) > 2000 && substr_count($content, '<?php') <= 1 && preg_match('/<html|<head|<body|rel=["\'](?:amphtml|canonical|alternate)/i', $content);
+        $googleInside = str_contains($hay, 'google-site-verification');
+        $score = count($kwHits) + count(array_unique($extHits)) + ($seoDir ? 2 : 0) + ($staticPhp ? 2 : 0) + ($googleInside ? 1 : 0);
+        if ($score < 3 || count($kwHits) < 2) return null;
+        $risk = $score >= 7 ? 'critical' : 'high';
+        $matches = [];
+        foreach ($kwHits as $k) $matches[] = ['name'=>'gambling-keyword','risk'=>$risk,'pattern'=>$k,'snippet'=>$k];
+        foreach (array_unique($extHits) as $h) $matches[] = ['name'=>'suspicious-external-seo-link','risk'=>$risk,'pattern'=>$h,'snippet'=>$h];
+        if ($seoDir) $matches[] = ['name'=>'seo-looking-directory','risk'=>'high','pattern'=>'new/suspicious SEO directory','snippet'=>$relative];
+        if ($staticPhp) $matches[] = ['name'=>'static-html-in-php','risk'=>'high','pattern'=>'large static HTML content inside PHP file','snippet'=>basename($path)];
+        return ['risk'=>$risk,'rule_key'=>'seo-doorway-gambling-spam','title'=>'SEO doorway / gambling spam page','description'=>'Static doorway content with gambling keywords and suspicious external SEO links/domains was detected.','matched'=>$matches];
+    }
     private function knownFalsePositivePath(string $path): bool { foreach ((require base_path('rules/default-rules.php'))['allowlist'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
     private function selfReadingPackedLoaderEvidence(string $content): ?array
     {

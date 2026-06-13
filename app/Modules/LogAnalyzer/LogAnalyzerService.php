@@ -5,10 +5,12 @@ use App\Support\DB;
 
 class LogAnalyzerService
 {
+    private int $skippedInserts = 0;
     public function analyze(): int
     {
-        $count = 0;
+        $count = 0; $this->skippedInserts = 0;
         foreach (config('guard.log_paths') as $pattern) foreach (glob($pattern) ?: [] as $log) $count += $this->analyzeFile($log);
+        if ($this->skippedInserts > 0) fwrite(STDERR, "Skipped log events due to DB insert errors: {$this->skippedInserts}\n");
         return $count;
     }
     private function analyzeFile(string $path): int
@@ -20,8 +22,14 @@ class LogAnalyzerService
             if (!$event) continue;
             if (DB::first('SELECT id FROM log_events WHERE log_path=? AND line_number=? AND raw_line=?', [$path, $i+1, $lines[$i]])) continue;
             $uriHash = $parsed['uri'] !== null ? hash('sha256', $parsed['uri']) : null;
-            DB::insert('INSERT INTO log_events (site_id,log_path,line_number,ip,method,uri,uri_hash,status_code,user_agent,referer,event_type,risk,raw_line,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [null,$path,$i+1,$parsed['ip'],$parsed['method'],$parsed['uri'],$uriHash,$parsed['status'],$parsed['ua'],$parsed['referer'],$event['type'],$event['risk'],$lines[$i],$parsed['timestamp'] ?? now(),now()]);
-            $count++;
+            try {
+                DB::insert('INSERT INTO log_events (site_id,log_path,line_number,ip,method,uri,uri_hash,status_code,user_agent,referer,event_type,risk,raw_line,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [null,$path,$i+1,$parsed['ip'],$parsed['method'],$parsed['uri'],$uriHash,$parsed['status'],$parsed['ua'],$parsed['referer'],$event['type'],$event['risk'],$lines[$i],$parsed['timestamp'] ?? now(),now()]);
+                $count++;
+            } catch (\Throwable $e) {
+                $this->skippedInserts++;
+                fwrite(STDERR, 'Skipped log event insert for '. $path . ':' . ($i+1) . ' - ' . $e->getMessage() . PHP_EOL);
+                continue;
+            }
         }
         return $count;
     }
