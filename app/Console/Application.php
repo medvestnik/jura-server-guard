@@ -19,13 +19,14 @@ class Application
                 'serve' => $this->serve($argv), 'migrate' => $this->migrate(), 'guard:seed-rules' => $this->seedRules(), 'guard:create-admin' => $this->createAdmin($argv[2] ?? env_value('JURA_ADMIN_EMAIL','admin@example.com'), $argv[3] ?? bin2hex(random_bytes(12))),
                 'guard:scan' => $this->scan('full', null, $argv), 'guard:scan-user' => $this->scan('user', $argv[2] ?? null, $argv), 'guard:scan-site' => $this->scan('site', $argv[2] ?? null, $argv), 'guard:logs' => $this->logs($argv),
                 'guard:backup-detect' => $this->backupDetect(), 'guard:backups:list-users' => $this->backupUsers(), 'guard:backups:list' => $this->backupList($argv), 'guard:backups:find-file' => $this->backupFind($argv), 'guard:backups:preview' => $this->backupPreview($argv), 'guard:backups:diff' => $this->backupDiff($argv), 'guard:backups:restore-file' => $this->backupRestore($argv),
-                'guard:scan-unlock' => $this->scanUnlock($argv), 'guard:cleanup-running-scans' => $this->cleanupRunningScans($argv), 'guard:prune' => $this->prune($argv), 'guard:db-stats' => $this->dbStats(), 'guard:optimize-db' => $this->optimizeDb(),
+                'guard:scan-active' => $this->scanActive(), 'guard:scan-unlock' => $this->scanUnlock($argv), 'guard:cleanup-running-scans' => $this->cleanupRunningScans($argv), 'guard:prune' => $this->prune($argv), 'guard:db-stats' => $this->dbStats(), 'guard:optimize-db' => $this->optimizeDb(),
                 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:status' => $this->status(), 'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
             };
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
     }
 
-    private function help(): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run]\n  guard:scan-user {user}\n  guard:scan-site {path}\n  guard:logs [--force] [--no-lock]\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
+    private function help(): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run]\n  guard:scan-user {user}\n  guard:scan-site {path}\n  guard:logs [--force] [--no-lock]\n  guard:scan-active
+  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
     private function noop(string $cmd): int { if ($cmd==='key:generate') $this->ensureKey(); echo "$cmd complete.\n"; return 0; }
     private function ensureKey(): void { $env=base_path('.env'); if (!is_file($env) && is_file(base_path('.env.example'))) copy(base_path('.env.example'), $env); if (is_file($env)) { $c=file_get_contents($env); if (preg_match('/^APP_KEY=\s*$/m',$c)) file_put_contents($env,preg_replace('/^APP_KEY=\s*$/m','APP_KEY=base64:'.base64_encode(random_bytes(32)),$c)); } }
 
@@ -71,6 +72,13 @@ class Application
         $this->ensureColumn('scan_runs', 'scope_type', $driver === 'mysql' ? "VARCHAR(32) NOT NULL DEFAULT 'full'" : "TEXT NOT NULL DEFAULT 'full'");
         $this->ensureColumn('scan_runs', 'scope_value', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
         $this->ensureColumn('scan_runs', 'error_text', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+
+        $this->ensureColumn('scan_runs', 'pid', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
+        $this->ensureColumn('scan_runs', 'current_site', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+        $this->ensureColumn('scan_runs', 'current_path', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+        $this->ensureColumn('scan_runs', 'total_files_estimated', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
+        $this->ensureColumn('scan_runs', 'last_heartbeat_at', $driver === 'mysql' ? 'DATETIME NULL' : 'TEXT NULL');
+        $this->ensureColumn('scan_runs', 'progress_message', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
         $this->backfillScanRunCompatibilityColumns();
         $this->ensureRestoreActionsTable($driver);
 
@@ -154,7 +162,8 @@ class Application
     {
         if ($scope !== 'full' && !$value) throw new \InvalidArgumentException('Scope value is required.');
         $options = $this->scanOptions($argv); $lock = new ScanLock();
-        if (!$options['no_lock']) $lock->acquire(implode(' ', array_slice($argv, 1)), $options['force']);
+        $lockLabel = $this->optionString($argv, '--lock-label') ?? implode(' ', array_slice($argv, 1));
+        if (!$options['no_lock']) $lock->acquire($lockLabel, $options['force']);
         try { $id=(new ScannerService())->scan($scope,$value,$options); echo "Scan run #$id completed.\n"; return 0; }
         finally { if (!$options['no_lock']) $lock->release(); }
     }
@@ -162,6 +171,40 @@ class Application
     private function scanOptions(array $argv): array { return ['profile'=>$this->optionString($argv,'--profile') ?? (string)config('guard.scan_profile','fast'), 'force'=>in_array('--force',$argv,true), 'no_lock'=>in_array('--no-lock',$argv,true), 'include_old'=>in_array('--include-old',$argv,true), 'include_storage'=>in_array('--include-storage',$argv,true), 'include_backups'=>in_array('--include-backups',$argv,true), 'dry_run'=>in_array('--dry-run',$argv,true), 'verbose'=>in_array('--verbose',$argv,true), 'max_files'=>$this->optionInt($argv,'--max-files'), 'max_seconds'=>$this->optionInt($argv,'--max-seconds')]; }
     private function optionInt(array $argv, string $name): ?int { foreach($argv as $a) if(str_starts_with($a,$name.'=')) return (int)substr($a,strlen($name)+1); return null; }
     private function optionString(array $argv, string $name): ?string { foreach($argv as $a) if(str_starts_with($a,$name.'=')) return substr($a,strlen($name)+1); return null; }
+
+    private function scanActive(): int
+    {
+        $lock = (new ScanLock())->read();
+        $run = DB::first("SELECT * FROM scan_runs WHERE status='running' ORDER BY id DESC LIMIT 1") ?: [];
+        $running = (bool)$lock || (bool)$run;
+        echo "Scan running: ".($running ? 'yes' : 'no')."\n";
+        if (!$running) return 0;
+        $pid = (int)($run['pid'] ?? $lock['pid'] ?? 0);
+        $started = $run['started_at'] ?? $lock['started_at'] ?? null;
+        $lastHeartbeat = $run['last_heartbeat_at'] ?? null;
+        $stale = $lastHeartbeat ? (time() - strtotime($lastHeartbeat) > 60) : false;
+        $elapsed = $started ? $this->formatSeconds(max(0, time() - strtotime($started))) : 'n/a';
+        echo "PID: ".($pid ?: 'n/a')."\n";
+        echo "scan_run id: ".($run['id'] ?? 'n/a')."\n";
+        echo "profile: ".($run['profile'] ?? 'n/a')."\n";
+        echo "scope: ".(($run['scope_type'] ?? 'n/a').(isset($run['scope_value']) && $run['scope_value'] !== null ? ' '.$run['scope_value'] : ''))."\n";
+        echo "files scanned: ".($run['files_scanned'] ?? 0)."\n";
+        echo "skipped media: ".($run['skipped_media'] ?? 0)."\n";
+        echo "skipped directories: ".($run['skipped_directories'] ?? 0)."\n";
+        echo "findings: ".($run['findings_count'] ?? 0)."\n";
+        echo "started_at: ".($started ?? 'n/a')."\n";
+        echo "last heartbeat: ".($lastHeartbeat ?? 'n/a')."\n";
+        echo "elapsed time: $elapsed\n";
+        echo "stale: ".($stale ? 'yes' : 'no')."\n";
+        if ($lock) echo "lock: ".($lock['command'] ?? 'unknown')."\n";
+        return 0;
+    }
+
+    private function formatSeconds(int $seconds): string
+    {
+        return sprintf('%02d:%02d:%02d', intdiv($seconds, 3600), intdiv($seconds % 3600, 60), $seconds % 60);
+    }
+
     private function scanUnlock(array $argv): int { echo (new ScanLock())->unlock(in_array('--force',$argv,true))."\n"; return 0; }
     private function cleanupRunningScans(array $argv): int { $h=$this->optionInt($argv,'--hours') ?? 2; DB::statement("UPDATE scan_runs SET status='failed', finished_at=?, error_text=?, updated_at=? WHERE status='running' AND started_at < ".DB::nowMinusHoursSql($h), [now(), "Marked failed by cleanup after {$h} hours", now()]); echo "Old running scan_runs marked failed.\n"; return 0; }
     private function prune(array $argv): int { $d=$this->optionInt($argv,'--days') ?? 30; $cut=gmdate('Y-m-d H:i:s', time()-$d*86400); foreach(['log_events','scan_runs'] as $t) DB::statement("DELETE FROM $t WHERE created_at < ?",[$cut]); DB::statement("DELETE FROM file_snapshots WHERE is_missing=1 AND updated_at < ?",[$cut]); echo "Pruned data older than $d days.\n"; return 0; }

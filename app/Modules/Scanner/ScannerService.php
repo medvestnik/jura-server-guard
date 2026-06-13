@@ -10,19 +10,25 @@ use RecursiveCallbackFilterIterator;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use Throwable;
+use SplFileInfo;
 
 class ScannerService
 {
     private int $skippedDirectories = 0;
     private int $skippedMedia = 0;
+    private int $lastDbProgressAt = 0;
+    private int $lastDbProgressFiles = 0;
     public function __construct(private ?RuleRepository $rules = null) { $this->rules ??= new RuleRepository(); }
 
     public function scan(string $scopeType = 'full', ?string $scopeValue = null, array $options = []): int
     {
-        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,files_scanned,skipped_media,skipped_directories,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$this->profile($options),now(),now()]);
+        $profile = $this->profile($options);
+        $pid = getmypid() ?: null;
+        $totalEstimated = $this->estimateTotalFiles($scopeType, $scopeValue, $options);
+        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,pid,total_files_estimated,last_heartbeat_at,progress_message,files_scanned,skipped_media,skipped_directories,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$profile,$pid,$totalEstimated,now(),'Starting scan',now(),now()]);
         $files = 0; $findings = 0;
         $stop = function (string $signal) use (&$runId, &$files, &$findings): void {
-            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $findings, $signal, now(), $runId]);
+            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', ['stopped', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $signal, now(), $signal, now(), $runId]);
             exit(130);
         };
         if (function_exists('pcntl_async_signals')) {
@@ -35,33 +41,34 @@ class ScannerService
             $sites = match ($scopeType) { 'user' => $inv->refresh($scopeValue, null, $options), 'site' => $inv->refresh(null, $scopeValue, $options), default => $inv->refresh(null, null, $options) };
             $this->progress($options, sprintf('Scan #%d [%s]: %d site(s) selected for %s%s', $runId, $this->profile($options), count($sites), $scopeType, $scopeValue ? ': '.$scopeValue : '')); 
             foreach ($sites as $site) {
-                [$f, $c] = $this->scanSite($site, $runId, $options); $files += $f; $findings += $c;
+                [$f, $c] = $this->scanSite($site, $runId, $options, $files, $findings); $files += $f; $findings += $c;
                 DB::statement('UPDATE sites SET last_scan_at=?, updated_at=? WHERE id=?', [now(), now(), $site['id']]);
             }
             if (!($options['skip_logs'] ?? false)) (new LogAnalyzerService())->analyze();
-            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, updated_at=? WHERE id=?', ['completed', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, now(), $runId]);
+            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, current_site=NULL, current_path=NULL, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', ['completed', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, now(), 'Scan completed', now(), $runId]);
             $this->progress($options, "Scan #$runId completed: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories}");
             return $runId;
         } catch (Throwable $e) {
-            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $findings, $e->getMessage(), now(), $runId]);
+            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $e->getMessage(), now(), 'Scan failed', now(), $runId]);
             throw $e;
         }
     }
 
-    private function scanSite(array $site, int $runId, array $options): array
+    private function scanSite(array $site, int $runId, array $options, int $baseFiles = 0, int $baseFindings = 0): array
     {
         $start = time(); $count = 0; $findings = 0; $seen = [];
         $maxFiles = (int)($options['max_files'] ?? config('guard.max_files_per_site'));
         $maxSeconds = (int)($options['max_seconds'] ?? config('guard.max_scan_seconds_per_site'));
         $dryRun = (bool)($options['dry_run'] ?? false);
         $this->progress($options, "Scanning site {$site['name']} ({$site['path']})");
+        $this->updateRunProgress($runId, $baseFiles, $baseFindings, $site['name'] ?? null, $site['path'] ?? null, "Scanning site {$site['name']}", true);
         $it = new RecursiveIteratorIterator($this->filteredIterator($site['path'], $options));
         foreach ($it as $file) {
             if ($maxFiles > 0 && $count >= $maxFiles) { $this->progress($options, "Max files reached for {$site['name']}: $maxFiles"); break; }
             if ($maxSeconds > 0 && time() - $start >= $maxSeconds) { $this->progress($options, "Max seconds reached for {$site['name']}: $maxSeconds"); break; }
             if (!$file->isFile() || $file->isLink()) continue;
             $path = $file->getPathname();
-            if (!$this->shouldScanFile($path, $site['path'], $options)) { $this->skippedMedia++; continue; }
+            if (!$this->shouldScanFile($path, $site['path'], $options)) { $this->skippedMedia++; $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $path, 'Skipping non-eligible/media file'); continue; }
             $seen[$path] = true; $count++;
             $relative = ltrim(str_replace($site['path'], '', $path), '/');
             $pathHash = hash('sha256', $path);
@@ -72,11 +79,41 @@ class ScannerService
                 if (!$dryRun) $this->upsertFinding($runId, $site['id'], $path, $meta, $finding);
                 $findings++;
             }
+            if ($count % 100 === 0) $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $path, "Scanning {$site['name']}");
             if ($count % 1000 === 0) $this->progress($options, "Progress {$site['name']}: files=$count findings=$findings elapsed=".(time()-$start).'s');
         }
         if (!$dryRun) foreach (DB::select('SELECT id,path FROM file_snapshots WHERE site_id=? AND is_missing=0', [$site['id']]) as $snap) if (!isset($seen[$snap['path']]) && !file_exists($snap['path'])) DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,updated_at=? WHERE id=?', [now(),now(),$snap['id']]);
+        $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $site['path'] ?? null, "Finished {$site['name']}", true);
         $this->progress($options, "Finished {$site['name']}: files=$count findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories} elapsed=".(time()-$start).'s');
         return [$count, $findings];
+    }
+
+
+    private function updateRunProgress(int $runId, int $files, int $findings, ?string $site, ?string $path, string $message, bool $force = false): void
+    {
+        $now = time();
+        if (!$force && ($files - $this->lastDbProgressFiles) < 100 && ($now - $this->lastDbProgressAt) < 3) return;
+        $this->lastDbProgressAt = $now;
+        $this->lastDbProgressFiles = $files;
+        DB::statement('UPDATE scan_runs SET files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, current_site=?, current_path=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', [$files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $site, $path, now(), $message, now(), $runId]);
+    }
+
+    private function estimateTotalFiles(string $scopeType, ?string $scopeValue, array $options): ?int
+    {
+        try {
+            $inv = new InventoryService();
+            $sites = match ($scopeType) { 'user' => $inv->refresh($scopeValue, null, $options), 'site' => $inv->refresh(null, $scopeValue, $options), default => $inv->refresh(null, null, $options) };
+            $total = 0;
+            foreach ($sites as $site) {
+                $it = new RecursiveIteratorIterator($this->filteredIterator($site['path'], $options));
+                foreach ($it as $file) {
+                    if ($file instanceof SplFileInfo && $file->isFile() && !$file->isLink() && $this->shouldScanFile($file->getPathname(), $site['path'], $options)) $total++;
+                }
+            }
+            $this->skippedDirectories = 0;
+            $this->skippedMedia = 0;
+            return $total;
+        } catch (Throwable) { return null; }
     }
 
 
