@@ -26,6 +26,21 @@ function finding_filters(): array {
     if (($_GET['date_to']??'')!=='') { $where[]='f.last_seen_at <= ?'; $params[]=$_GET['date_to'].' 23:59:59'; }
     return [$where ? 'WHERE '.implode(' AND ', $where) : '', $params];
 }
+
+function file_change_filters(): array {
+    $where=[]; $params=[]; $kind=$_GET['kind']??'';
+    if (($_GET['path']??'')!=='') { $where[]='fs.path LIKE ?'; $params[]='%'.$_GET['path'].'%'; }
+    if ($kind==='new') $where[]='fs.first_seen_at = fs.last_seen_at AND fs.is_missing=0';
+    if ($kind==='modified') $where[]='fs.last_changed_at IS NOT NULL AND fs.is_missing=0';
+    if ($kind==='deleted') $where[]='fs.is_missing=1';
+    if ($kind==='webroot') $where[]="fs.relative_path NOT LIKE '%/%'";
+    if ($kind==='htaccess') $where[]="fs.path LIKE '%.htaccess%'";
+    if ($kind==='google') $where[]="fs.relative_path LIKE 'google%.html'";
+    if ($kind==='php') $where[]="fs.path LIKE '%.php'";
+    if ($kind==='html') $where[]="(fs.path LIKE '%.html' OR fs.path LIKE '%.htm')";
+    if ($kind==='seo') $where[]="(LOWER(fs.path) LIKE '%denza%' OR LOWER(fs.path) LIKE '%casino%' OR LOWER(fs.path) LIKE '%slot%' OR LOWER(fs.path) LIKE '%mahjong%' OR LOWER(fs.path) LIKE '%judi%' OR LOWER(fs.path) LIKE '%gacor%')";
+    return [$where ? 'WHERE '.implode(' AND ', $where) : '', $params];
+}
 function log_filters(): array {
     $where=[]; $params=[];
     foreach (['risk'=>'l.risk','type'=>'l.event_type','ip'=>'l.ip'] as $key=>$col) if (($_GET[$key]??'')!=='') { $where[]="$col=?"; $params[]=$_GET[$key]; }
@@ -41,7 +56,7 @@ if ($path === '/finding/allowlist' && $method==='POST') { $f=DB::first('SELECT *
 if ($path === '/finding/quarantine' && $method==='POST' && config('guard.web_actions_enabled')) { (new QuarantineService())->quarantine((int)$_POST['id'], 'Web panel quarantine'); redirect('/quarantine'); }
 if ($path === '/quarantine/restore' && $method==='POST' && config('guard.web_actions_enabled')) { (new QuarantineService())->restore((int)$_POST['id']); redirect('/quarantine'); }
 if ($path === '/rules/toggle' && $method==='POST') { $table=($_POST['table']??'rules')==='allowlist_rules'?'allowlist_rules':'rules'; DB::statement("UPDATE $table SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?", [now(), (int)$_POST['id']]); redirect('/rules'); }
-if ($path === '/scan/start' && $method==='POST') { $profile=in_array($_POST['profile']??'fast',['fast','standard','deep'],true)?$_POST['profile']:'fast'; $scope=$_POST['scope']??'full'; $value=$_POST['value']??null; if(DB::first("SELECT id FROM scan_runs WHERE status='running' AND scope_type=? AND COALESCE(scope_value,'')=COALESCE(?, '')",[$scope,$value])) redirect('/'); $lock=new ScanLock(); $lock->acquire('web scan '.$scope.' '.$profile,false); try { (new ScannerService())->scan($scope,$value,['profile'=>$profile,'quiet'=>true]); } finally { $lock->release(); } redirect('/'); }
+if ($path === '/scan/start' && $method==='POST') { $profile=in_array($_POST['profile']??'fast',['fast','standard','deep'],true)?$_POST['profile']:'fast'; $scope=$_POST['scope']??'full'; $value=$_POST['value']??null; if(DB::first("SELECT id FROM scan_runs WHERE status='running' AND scope_type=? AND COALESCE(scope_value,'')=COALESCE(?, '')",[$scope,$value])) redirect('/'); $lock=new ScanLock(); $lock->acquire('web scan '.$scope.' '.$profile,false); try { $maxSeconds = ($_POST['max_seconds'] ?? '') === '0' ? 0 : (int)($_POST['max_seconds'] ?? 0); $opts=['profile'=>$profile,'quiet'=>true]; if ($maxSeconds >= 0) $opts['max_seconds']=$maxSeconds; (new ScannerService())->scan($scope,$value,$opts); } finally { $lock->release(); } redirect('/'); }
 if ($path === '/settings' && $method==='POST') { $keyCol=DB::quoteIdentifier('key'); foreach ($_POST['settings'] ?? [] as $k=>$v) { if(DB::first("SELECT id FROM settings WHERE $keyCol=?",[$k])) DB::statement("UPDATE settings SET value=?,updated_at=? WHERE $keyCol=?",[$v,now(),$k]); else DB::insert("INSERT INTO settings ($keyCol,value,created_at,updated_at) VALUES (?,?,?,?)",[$k,$v,now(),now()]); } redirect('/settings'); }
 if ($path === '/findings/export.csv') { [$w,$p]=finding_filters(); send_csv('findings.csv', DB::select("SELECT f.id,f.risk,f.status,f.type,u.name user_name,s.name site_name,f.path,f.title,f.sha256,f.first_seen_at,f.last_seen_at FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY f.id DESC LIMIT 50000", $p)); }
 if ($path === '/logs/export.csv') { [$w,$p]=log_filters(); send_csv('log_events.csv', DB::select("SELECT l.id,l.risk,l.event_type,u.name user_name,s.name site_name,l.ip,l.method,l.uri,l.status_code,l.user_agent,l.referer,l.created_at FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY l.id DESC LIMIT 50000", $p)); }
@@ -52,6 +67,7 @@ $data = match ($path) {
  '/sites' => ['sites.index',['sites'=>DB::select('SELECT s.*, u.name user_name, COUNT(f.id) findings_count, MAX(CASE f.risk WHEN "critical" THEN 4 WHEN "high" THEN 3 WHEN "medium" THEN 2 ELSE 1 END) risk_score FROM sites s LEFT JOIN users u ON u.id=s.server_user_id LEFT JOIN findings f ON f.site_id=s.id AND f.status="new" GROUP BY s.id ORDER BY s.path')]],
  '/findings' => ['findings.index',(function(){ [$w,$p]=finding_filters(); return ['findings'=>DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY CASE risk WHEN "critical" THEN 1 WHEN "high" THEN 2 WHEN "medium" THEN 3 ELSE 4 END, f.id DESC LIMIT 500',$p)]; })()],
  '/logs' => ['logs.index',(function(){ [$w,$p]=log_filters(); return ['events'=>DB::select('SELECT l.*, s.name site_name, u.name user_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY l.id DESC LIMIT 1000',$p)]; })()],
+ '/file-changes' => ['file-changes.index',(function(){ [$w,$p]=file_change_filters(); return ['changes'=>DB::select('SELECT fs.*, s.name site_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id '.$w.' ORDER BY COALESCE(fs.last_changed_at,fs.first_seen_at,fs.updated_at) DESC LIMIT 1000',$p)]; })()],
  '/quarantine' => ['quarantine.index',['items'=>DB::select('SELECT * FROM quarantine_items ORDER BY id DESC')]],
  '/rules' => ['rules.index',['rules'=>DB::select('SELECT * FROM rules ORDER BY enabled DESC,risk DESC,name'),'allow'=>DB::select('SELECT * FROM allowlist_rules ORDER BY enabled DESC,name')]],
  '/settings' => ['settings.index',['settings'=>DB::select('SELECT * FROM settings ORDER BY '.DB::quoteIdentifier('key'))]],
