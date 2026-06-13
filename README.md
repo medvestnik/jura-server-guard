@@ -1,6 +1,12 @@
 # Jura Server Guard
 Open-source server security monitoring panel for hosting servers and PHP websites.
 
+Documentation: https://medvestnik.github.io/jura-server-guard/
+
+Local documentation site: `/docs/index.html`
+
+GitHub Pages deployment is provided by `.github/workflows/deploy-docs.yml`. If Pages is not enabled yet, open the repository settings, enable GitHub Pages for GitHub Actions, and push to `main` to publish the static `/docs` website.
+
 **Jura AV Monitor is the built-in malware detection module of Jura Server Guard.**
 
 License: **GNU AGPL-3.0-or-later**. Target OS for the first MVP: **AlmaLinux 8/9** with ISPmanager-style websites in `/var/www/*/data/www/*`.

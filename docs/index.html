@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Документация Jura Server Guard: установка, панель управления, CLI, профили сканирования, карантин и ISPmanager backups.">
+  <title>Jura Server Guard — документация панели управления</title>
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#content">Перейти к содержимому</a>
+  <header class="hero" id="top">
+    <nav class="topbar" aria-label="Главная навигация">
+      <a class="brand" href="#top" aria-label="Jura Server Guard">
+        <span class="brand-mark">JSG</span>
+        <span>Jura Server Guard</span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="sidebar">Меню</button>
+    </nav>
+    <div class="hero-grid">
+      <div>
+        <p class="eyebrow">Security panel for PHP hosting servers</p>
+        <h1>Jura Server Guard — документация панели управления</h1>
+        <p class="hero-lead">Практическое руководство для администраторов: установка, безопасный доступ к web-панели, профили сканирования, разбор находок, карантин, восстановление из ISPmanager backups и CLI-команды.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#installation">Начать установку</a>
+          <a class="button" href="#cli-reference">CLI reference</a>
+        </div>
+      </div>
+      <aside class="hero-card" aria-label="Ключевые параметры">
+        <dl>
+          <div><dt>Панель</dt><dd><code>127.0.0.1:8765</code></dd></div>
+          <div><dt>PHP</dt><dd><code>/opt/php83/bin/php</code></dd></div>
+          <div><dt>Установка</dt><dd><code>/opt/jura-server-guard</code></dd></div>
+          <div><dt>Профиль по умолчанию</dt><dd><code>fast</code></dd></div>
+        </dl>
+      </aside>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <label class="search-label" for="doc-search">Поиск по разделам</label>
+      <input id="doc-search" class="search" type="search" placeholder="Например: quarantine, backup, scan">
+      <nav class="toc" aria-label="Разделы документации">
+        <a href="#overview">Что это</a>
+        <a href="#installation">Установка</a>
+        <a href="#panel-access">Доступ к панели</a>
+        <a href="#dashboard">Dashboard</a>
+        <a href="#suspicious-logs">Подозрительные логи</a>
+        <a href="#scan-profiles">Профили сканирования</a>
+        <a href="#web-scans">Сканирование из панели</a>
+        <a href="#findings">Findings</a>
+        <a href="#quarantine">Карантин и restore</a>
+        <a href="#backups">ISPmanager backups</a>
+        <a href="#incidents">Сценарии реагирования</a>
+        <a href="#cli-reference">CLI reference</a>
+        <a href="#updating">Обновление</a>
+        <a href="#troubleshooting">Troubleshooting</a>
+        <a href="#security">Security recommendations</a>
+      </nav>
+    </aside>
+
+    <main id="content" class="content">
+      <section id="overview" data-title="overview что такое jura server guard lightweight security panel">
+        <div class="section-heading"><p class="kicker">Overview</p><h2>Что такое Jura Server Guard</h2></div>
+        <p>Jura Server Guard — лёгкая локальная панель безопасности для серверов с PHP-сайтами. Она помогает быстро увидеть пользователей и сайты под <code>/var/www</code>, запустить проверку, разобрать подозрительные файлы и сохранить доказательства для инцидент-репонса.</p>
+        <div class="cards two">
+          <article class="card"><h3>Что обнаруживает</h3><ul><li>подозрительные PHP-файлы и webshell-маркеры;</li><li>packed loaders, <code>eval</code>, <code>gzuncompress</code>, <code>gzinflate</code> и self-reading payloads;</li><li>SEO cloaking, ALFA/alfacgiapi-индикаторы;</li><li>fake validation folders: <code>well-known</code>, <code>pki-validation</code>, PHP внутри validation paths.</li></ul></article>
+          <article class="card"><h3>Что поддерживает</h3><ul><li>карантин и восстановление подозрительных файлов;</li><li>профили сканирования <code>fast</code>, <code>standard</code>, <code>deep</code>;</li><li>историю сканов и recent suspicious log events;</li><li>браузер и selective restore из ISPmanager/custom backups.</li></ul></article>
+        </div>
+        <div class="callout info"><strong>Info.</strong> Инструмент не заменяет полноценный EDR/антивирус. Его задача — дать хостинг-администратору быстрый обзор PHP-сайтов, подозрительных изменений и безопасный workflow карантина.</div>
+      </section>
+
+      <section id="installation" data-title="installation установка php opt php83 service timer">
+        <div class="section-heading"><p class="kicker">Installation</p><h2>Установка</h2></div>
+        <p>Рекомендуемая схема — хранить рабочую копию репозитория в <code>/root/jura-server-guard</code>, а установленное приложение в <code>/opt/jura-server-guard</code>. Для запуска используйте альтернативный PHP, например <code>/opt/php83/bin/php</code>.</p>
+        <div class="callout warning"><strong>Warning.</strong> Не заменяйте системный PHP на ISPmanager/AlmaLinux сервере. Панель должна работать с выбранным бинарником PHP, например <code>/opt/php83/bin/php</code>, без переключения системного <code>/usr/bin/php</code>.</div>
+        <div class="grid-list">
+          <div><span>Recommended PHP</span><code>/opt/php83/bin/php</code></div>
+          <div><span>Repo path</span><code>/root/jura-server-guard</code></div>
+          <div><span>Install path</span><code>/opt/jura-server-guard</code></div>
+          <div><span>Service</span><code>jura-server-guard</code></div>
+          <div><span>Timer</span><code>jura-server-guard-scan.timer</code></div>
+          <div><span>Panel bind</span><code>127.0.0.1:8765</code></div>
+        </div>
+        <pre><code class="language-bash">cd /root/jura-server-guard
+sudo JURA_PHP_BIN=/opt/php83/bin/php bin/install-almalinux.sh</code></pre>
+        <p>После установки проверьте сервис, таймер и порт:</p>
+        <pre><code class="language-bash">systemctl status jura-server-guard --no-pager -l
+systemctl status jura-server-guard-scan.timer --no-pager -l
+ss -lntp | grep 8765</code></pre>
+      </section>
+
+      <section id="panel-access" data-title="accessing panel ssh tunnel browser localhost expose">
+        <div class="section-heading"><p class="kicker">Accessing the panel</p><h2>Доступ к web-панели</h2></div>
+        <p>Панель должна слушать только localhost на сервере. Для удалённой работы откройте SSH-туннель с вашей рабочей машины:</p>
+        <pre><code class="language-bash">ssh -p 22222 -L 8765:127.0.0.1:8765 root@SERVER_IP</code></pre>
+        <p>Затем откройте в браузере:</p>
+        <pre><code class="language-text">http://127.0.0.1:8765</code></pre>
+        <div class="callout danger"><strong>Danger.</strong> Не публикуйте порт <code>8765</code> в интернет. Даже при наличии логина панель управляет сканированием, просмотром файлов, карантином и потенциальным restore. Доступ должен идти через SSH-туннель, VPN или другой закрытый административный контур.</div>
+      </section>
+
+      <section id="dashboard" data-title="dashboard users sites new findings last scan history recent suspicious log events">
+        <div class="section-heading"><p class="kicker">Dashboard</p><h2>Главный экран панели</h2></div>
+        <p>Dashboard предназначен для быстрого ответа на вопрос: «что сейчас происходит на сервере и куда смотреть первым?»</p>
+        <div class="cards three">
+          <article class="card"><h3>Users</h3><p>Количество системных пользователей с сайтами в <code>/var/www/{user}/data/www</code>. Помогает оценить охват инвентаризации.</p></article>
+          <article class="card"><h3>Sites</h3><p>Количество найденных сайтов. Из карточки удобно перейти к скану конкретного сайта.</p></article>
+          <article class="card"><h3>New findings</h3><p>Новые необработанные находки. Приоритет — <code>critical</code> и <code>high</code>.</p></article>
+          <article class="card"><h3>Last scan</h3><p>Последний запуск: профиль, статус, длительность, количество файлов и находок.</p></article>
+          <article class="card"><h3>Scan history</h3><p>История ручных и timer-сканов с областью проверки: all sites, user или site.</p></article>
+          <article class="card"><h3>Recent suspicious log events</h3><p>Свежие подозрительные HTTP-события из access/error логов с URI, IP и raw details.</p></article>
+        </div>
+      </section>
+
+      <section id="suspicious-logs" data-title="recent suspicious log events risk date time ip method uri raw details copy">
+        <div class="section-heading"><p class="kicker">Recent suspicious log events</p><h2>Свежие подозрительные события в логах</h2></div>
+        <p>Таблица логов помогает увидеть активность ботов, webshell probes и запросы к потенциально заражённым файлам. Важные колонки:</p>
+        <table>
+          <thead><tr><th>Колонка</th><th>Назначение</th></tr></thead>
+          <tbody>
+            <tr><td>Risk</td><td>Оценка риска события: чем выше риск, тем быстрее нужно проверить URI и файл на диске.</td></tr>
+            <tr><td>Date/Time</td><td>Время события из access/error log.</td></tr>
+            <tr><td>IP</td><td>IP клиента. Для nginx error log панель старается извлечь настоящий <code>client</code>.</td></tr>
+            <tr><td>Method</td><td>HTTP-метод. Подозрительные <code>POST</code> к неизвестным PHP-файлам требуют проверки.</td></tr>
+            <tr><td>URI</td><td>Запрошенный путь. Его можно скопировать и сопоставить с файлом сайта.</td></tr>
+            <tr><td>Raw / Details</td><td>Укороченная raw-строка и кнопка просмотра полного события.</td></tr>
+          </tbody>
+        </table>
+        <p>Для просмотра полной raw log line откройте <strong>Details</strong>. URI и raw-строку копируйте кнопками <strong>Copy URI</strong> и <strong>Copy raw</strong>, чтобы использовать их в grep/журнале расследования.</p>
+        <div class="callout tip"><strong>Tip.</strong> Особое внимание обращайте на <code>alfacgiapi</code>, <code>ALFA_DATA</code>, <code>xmlrpc.php</code>, <code>.well-known</code>, <code>pki-validation</code>, fake <code>well-known</code> без точки и неожиданные <code>POST</code>-запросы.</div>
+      </section>
+
+      <section id="scan-profiles" data-title="scan profiles fast standard deep artisan guard scan">
+        <div class="section-heading"><p class="kicker">Scan profiles</p><h2>Профили сканирования</h2></div>
+        <div class="cards three profile-cards">
+          <article class="card"><h3><code>fast</code></h3><p>Профиль по умолчанию для timer и dashboard. Проверяет PHP/config/dangerous directories, validation paths, uploads PHP, плагины и темы. Пропускает обычные media/images и подходит для ежедневного мониторинга.</p></article>
+          <article class="card"><h3><code>standard</code></h3><p>Сбалансированный ручной скан. Добавляет больше типов файлов, suspicious media, JS/HTML и content mismatch проверки. Хорош для расследования без полного обхода всех архивов и медиа.</p></article>
+          <article class="card"><h3><code>deep</code></h3><p>Полный аудит вручную. Включает media, archives, polyglot checks и тяжёлые проверки. Не используйте как timer-профиль на больших production-сайтах.</p></article>
+        </div>
+        <pre><code class="language-bash">/opt/php83/bin/php artisan guard:scan --profile=fast
+/opt/php83/bin/php artisan guard:scan-site /var/www/zao/data/www/zaodessu.com.ua --profile=fast --verbose
+/opt/php83/bin/php artisan guard:scan-user zao --profile=standard</code></pre>
+      </section>
+
+      <section id="web-scans" data-title="running scans from web panel dashboard site user profile dropdown progress concurrent">
+        <div class="section-heading"><p class="kicker">Running scans from the web panel</p><h2>Запуск сканов из панели</h2></div>
+        <p>В панели доступны кнопки запуска скана на разных уровнях:</p>
+        <ul><li><strong>Dashboard scan buttons</strong> — быстрый scan всех сайтов, обычно <code>fast</code>.</li><li><strong>Site scan button</strong> — проверка одного сайта, когда есть конкретный URI или finding.</li><li><strong>User scan button</strong> — проверка всех сайтов одного пользователя ISPmanager.</li><li><strong>Profile dropdown</strong> — выбор <code>fast</code>, <code>standard</code> или <code>deep</code> перед запуском.</li><li><strong>Active scan/progress</strong> — отображение текущей операции, статуса, прогресса и результата.</li></ul>
+        <div class="callout info"><strong>Info.</strong> Concurrent scans ограничены глобальным lock-файлом и статусом running scans. Это защищает сервер от перегрузки диска/CPU и предотвращает конфликтующие изменения в истории файлов и findings.</div>
+      </section>
+
+      <section id="findings" data-title="findings risk critical high medium low status evidence sha256 size mtime owner permissions">
+        <div class="section-heading"><p class="kicker">Findings</p><h2>Находки и их разбор</h2></div>
+        <p>Finding — это подозрительный файл, изменение или событие, подтверждённое правилом сканера. Начинайте с <code>critical</code>/<code>high</code>, затем разбирайте <code>medium</code> и <code>low</code>.</p>
+        <div class="cards two">
+          <article class="card"><h3>Risk levels</h3><ul><li><code>critical</code> — webshell, packed loader, ALFA markers, PHP в validation directory.</li><li><code>high</code> — сильные malware-индикаторы, risky upload PHP, подозрительный POST к файлу.</li><li><code>medium</code> — подозрительное имя/путь/комбинация функций.</li><li><code>low</code> — слабый сигнал или allowlisted файл с изменениями.</li></ul></article>
+          <article class="card"><h3>Finding status</h3><ul><li><code>new</code> — новая находка, ещё не разобрана.</li><li><code>open</code> — подтверждена и находится в работе.</li><li><code>quarantined</code> — файл перемещён в карантин.</li><li><code>restored</code> — восстановлен из quarantine/backup.</li><li><code>ignored</code> / false positive — можно использовать, если реализовано в текущей версии.</li></ul></article>
+        </div>
+        <p>На странице finding detail проверяйте evidence и matched rules, а также технические атрибуты: <code>sha256</code>, размер, <code>mtime</code>, owner, group и permissions. Эти данные нужны для отчёта и для сравнения с backup.</p>
+      </section>
+
+      <section id="quarantine" data-title="quarantine restore safe workflow guard quarantine restore">
+        <div class="section-heading"><p class="kicker">Quarantine and restore</p><h2>Карантин и восстановление</h2></div>
+        <p>Безопасный workflow: не удаляйте подозрительный файл сразу. Сначала сохраните evidence, переместите файл в quarantine и только затем восстанавливайте чистую версию из backup или CMS checksums.</p>
+        <ol><li>Откройте finding detail и проверьте matched rules.</li><li>Сохраните stat, sha256, путь и raw evidence.</li><li>Переместите файл в quarantine.</li><li>Проверьте сайт и логи.</li><li>Restore из quarantine выполняйте только для false positive.</li></ol>
+        <div class="callout warning"><strong>Warning.</strong> Web actions могут быть отключены по умолчанию. Это нормальная безопасная настройка: destructive операции лучше выполнять осознанно через CLI или включать web actions только на время администрирования.</div>
+        <pre><code class="language-bash">/opt/php83/bin/php artisan guard:quarantine FINDING_ID
+/opt/php83/bin/php artisan guard:restore QUARANTINE_ID</code></pre>
+      </section>
+
+      <section id="backups" data-title="ispmanager backup integration settings backups provider var backup restore diff preview">
+        <div class="section-heading"><p class="kicker">ISPmanager backup integration</p><h2>Интеграция с ISPmanager backups</h2></div>
+        <p>Настройки находятся в <strong>Settings → Backups</strong>. Включите backup integration и выберите provider:</p>
+        <ul><li><strong>ISPmanager</strong> — стандартная структура backups.</li><li><strong>Custom backup folder</strong> — пользовательский backup root.</li><li><strong>Disabled</strong> — интеграция скрыта и не используется.</li></ul>
+        <p>Default backup root: <code>/var/backup</code>. Путь можно изменить в настройках. Типичная структура ISPmanager:</p>
+        <pre><code class="language-text">/var/backup/{user}/{date}/</code></pre>
+        <div class="callout warning"><strong>Warning.</strong> Differential/incremental backups могут зависеть от цепочки архивов. Для полного восстановления сайта используйте штатные средства ISPmanager; Jura Server Guard ориентирован на безопасный selective restore отдельных файлов.</div>
+        <p>Workflow: найдите файл в backup, откройте preview нужной версии, сравните <strong>Diff current vs backup</strong>, затем восстановите только выбранный файл. Web restore отключён по умолчанию, пока администратор явно не включит эту возможность.</p>
+      </section>
+
+      <section id="incidents" data-title="typical incident response scenarios wordpress dle well-known packed loader false positive checksums">
+        <div class="section-heading"><p class="kicker">Incident response</p><h2>Типовые сценарии реагирования</h2></div>
+        <div class="scenario"><h3>Scenario A: fake WordPress files на DLE-сайте</h3><p>Если на DLE-сайте найден <code>wp-blog-header.php</code>, это сильный сигнал подмены или попытки замаскировать malware под WordPress. Проверьте finding, отправьте подозрительные файлы в quarantine, затем восстановите <code>index.php</code> и <code>.htaccess</code> из чистого backup.</p></div>
+        <div class="scenario"><h3>Scenario B: fake <code>well-known</code> folder</h3><p>Реальный ACME path — <code>.well-known</code> с точкой. Каталог <code>well-known</code> без точки подозрителен. PHP-файлы внутри validation directories считаются critical: отправьте их в quarantine или удалите fake folder после сохранения evidence.</p></div>
+        <div class="scenario"><h3>Scenario C: packed PHP loader</h3><p>Критическая комбинация: self-reading file <code>file_get_contents(__FILE__)</code>, распаковка через <code>gzuncompress</code>/<code>gzinflate</code>, <code>eval</code> и appended binary/compressed payload. Такие файлы сначала карантинируйте, затем ищите точку загрузки и соседние backdoors.</p></div>
+        <div class="scenario"><h3>Scenario D: false positive в легитимных WordPress files</h3><p>Если файл похож на legitimate WordPress core/plugin, проверьте checksums перед карантином:</p><pre><code class="language-bash">wp core verify-checksums --path=/path/to/site --allow-root
+wp plugin verify-checksums plugin-slug --path=/path/to/site --allow-root</code></pre></div>
+      </section>
+
+      <section id="cli-reference" data-title="cli reference guard status db stats scan logs prune optimize db">
+        <div class="section-heading"><p class="kicker">CLI reference</p><h2>Основные CLI-команды</h2></div>
+        <pre><code class="language-bash">/opt/php83/bin/php artisan guard:status
+/opt/php83/bin/php artisan guard:db-stats
+/opt/php83/bin/php artisan guard:scan --profile=fast
+/opt/php83/bin/php artisan guard:scan-site /path/to/site --profile=fast --verbose
+/opt/php83/bin/php artisan guard:scan-user username --profile=standard
+/opt/php83/bin/php artisan guard:logs
+/opt/php83/bin/php artisan guard:scan-unlock --force
+/opt/php83/bin/php artisan guard:cleanup-running-scans
+/opt/php83/bin/php artisan guard:prune --days=30
+/opt/php83/bin/php artisan guard:optimize-db</code></pre>
+      </section>
+
+      <section id="updating" data-title="updating jura server guard git pull rsync migrate composer service">
+        <div class="section-heading"><p class="kicker">Updating</p><h2>Обновление Jura Server Guard</h2></div>
+        <p>Перед обновлением остановите timer и сервис, подтяните репозиторий, синхронизируйте код в <code>/opt/jura-server-guard</code>, примените миграции и запустите сервис.</p>
+        <pre><code class="language-bash">systemctl disable --now jura-server-guard-scan.timer
+systemctl stop jura-server-guard
+
+cd /root/jura-server-guard
+git fetch --all --prune
+git pull --ff-only
+
+rsync -a --delete \
+  --exclude='.env' \
+  --exclude='storage/' \
+  --exclude='vendor/' \
+  /root/jura-server-guard/ /opt/jura-server-guard/
+
+cd /opt/jura-server-guard
+/opt/php83/bin/php artisan migrate
+
+systemctl daemon-reload
+systemctl start jura-server-guard
+systemctl status jura-server-guard --no-pager -l</code></pre>
+        <div class="callout tip"><strong>Tip.</strong> Если <code>composer.json</code> и <code>composer.lock</code> не изменились, Composer можно пропустить. Если Composer нужен, определяйте доступный <code>composer</code> или <code>composer.phar</code> на сервере; не полагайтесь на жёсткий путь <code>/root/jura-server-guard/composer.phar</code>.</div>
+      </section>
+
+      <section id="troubleshooting" data-title="troubleshooting panel not opening service port scan lock sql timer findings false positives">
+        <div class="section-heading"><p class="kicker">Troubleshooting</p><h2>Диагностика проблем</h2></div>
+        <div class="cards two">
+          <article class="card"><h3>Частые причины</h3><ul><li>panel not opening — нет SSH tunnel или сервис не запущен;</li><li>port 8765 not listening — упал <code>jura-server-guard</code> или bind изменён;</li><li>scan lock stuck — предыдущий scan аварийно завершился;</li><li>SQL missing column after update — не выполнен <code>artisan migrate</code>;</li><li>timer accidentally running — timer не остановлен перед ручным обслуживанием;</li><li>too many findings — запущен <code>deep</code> на большом сайте;</li><li>false positives — проверьте CMS checksums и allowlist.</li></ul></article>
+          <article class="card"><h3>Полезные команды</h3><pre><code class="language-bash">systemctl status jura-server-guard --no-pager -l
+journalctl -u jura-server-guard -n 100 --no-pager
+ss -lntp | grep 8765
+ps aux | grep '[a]rtisan guard:scan'
+/opt/php83/bin/php artisan guard:scan-unlock --force
+/opt/php83/bin/php artisan guard:cleanup-running-scans</code></pre></article>
+        </div>
+      </section>
+
+      <section id="security" data-title="security recommendations ssh tunnel checksums backups evidence">
+        <div class="section-heading"><p class="kicker">Security recommendations</p><h2>Рекомендации по безопасности</h2></div>
+        <ul class="check-list"><li>Держите панель привязанной к <code>127.0.0.1</code>.</li><li>Используйте SSH tunnel для доступа.</li><li>Держите web restore отключённым, пока он действительно не нужен.</li><li>Не выполняйте массовый quarantine для <code>medium</code> findings без ручной проверки.</li><li>Проверяйте checksums WordPress core/plugins перед выводом о заражении.</li><li>Используйте backups перед заменой файлов.</li><li>Сохраняйте evidence: stat, sha256, quarantine path, matched rules и raw log.</li></ul>
+      </section>
+    </main>
+  </div>
+
+  <button class="to-top" type="button" aria-label="Наверх">↑</button>
+  <script src="assets/js/app.js"></script>
+</body>
+</html>
