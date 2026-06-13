@@ -5,7 +5,12 @@ Documentation: https://medvestnik.github.io/jura-server-guard/
 
 Local documentation site: `/docs/index.html`
 
-GitHub Pages deployment is provided by `.github/workflows/deploy-docs.yml`. If Pages is not enabled yet, open the repository settings, enable GitHub Pages for GitHub Actions, and push to `main` to publish the static `/docs` website.
+GitHub Pages source must be set to `GitHub Actions` in repository settings.
+
+## Documentation deployment
+
+The static documentation website is located in `/docs`.
+It is automatically deployed to GitHub Pages after every push to `main` through `.github/workflows/deploy-docs.yml`.
 
 **Jura AV Monitor is the built-in malware detection module of Jura Server Guard.**
 
