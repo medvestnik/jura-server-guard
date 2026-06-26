@@ -12,7 +12,8 @@ Auth::require();
 
 function scan_pid_alive(int $pid): bool { return $pid > 0 && (function_exists('posix_kill') ? @posix_kill($pid, 0) : is_dir('/proc/'.$pid)); }
 function scan_active_context(): array {
-    $run = DB::first("SELECT * FROM scan_runs WHERE status='running' ORDER BY id DESC LIMIT 1");
+    if (DB::first("SELECT id FROM scan_runs WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated LIMIT 1")) { DB::statement("UPDATE scan_runs SET status='completed', finished_at=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated", [now(), 'Auto-completed by web active-scan context because progress reached 100%', now(), 'Auto-completed stale 100% scan', now()]); (new ScanLock())->unlock(true); }
+    $run = DB::first("SELECT * FROM scan_runs WHERE status='running' AND NOT (total_files_estimated > 0 AND files_scanned >= total_files_estimated) ORDER BY id DESC LIMIT 1");
     $lock = (new ScanLock())->read();
     $pid = (int)($run['pid'] ?? $lock['pid'] ?? 0);
     $pidAlive = $pid > 0 && scan_pid_alive($pid);
@@ -71,6 +72,8 @@ function file_change_filters(): array {
     if ($kind==='php') $where[]="fs.path LIKE '%.php'";
     if ($kind==='html') $where[]="(fs.path LIKE '%.html' OR fs.path LIKE '%.htm')";
     if ($kind==='seo') $where[]="(LOWER(fs.path) LIKE '%denza%' OR LOWER(fs.path) LIKE '%casino%' OR LOWER(fs.path) LIKE '%slot%' OR LOWER(fs.path) LIKE '%mahjong%' OR LOWER(fs.path) LIKE '%judi%' OR LOWER(fs.path) LIKE '%gacor%')";
+    if ($kind==='skipped') $where[]='fs.last_seen_scan_id IS NOT NULL AND (fs.last_changed_scan_id IS NULL OR fs.last_changed_scan_id <> fs.last_seen_scan_id) AND fs.is_missing=0';
+    if ($kind==='suspicious') $where[]="(fs.last_changed_scan_id = fs.last_seen_scan_id AND (LOWER(fs.path) LIKE '%.php' OR LOWER(fs.path) LIKE '%.phtml' OR fs.path LIKE '%.htaccess%' OR LOWER(fs.path) LIKE '%/uploads/%' OR LOWER(fs.path) LIKE '%/cache/%' OR LOWER(fs.path) LIKE '%404sbg%' OR LOWER(fs.path) LIKE '%configcwe%' OR LOWER(fs.path) LIKE '%fss-npy%'))";
     return [$where ? 'WHERE '.implode(' AND ', $where) : '', $params];
 }
 function log_filters(): array {
@@ -89,7 +92,7 @@ if ($path === '/finding/quarantine' && $method==='POST' && config('guard.web_act
 if ($path === '/quarantine/restore' && $method==='POST' && config('guard.web_actions_enabled')) { (new QuarantineService())->restore((int)$_POST['id']); redirect('/quarantine'); }
 if ($path === '/rules/toggle' && $method==='POST') { $table=($_POST['table']??'rules')==='allowlist_rules'?'allowlist_rules':'rules'; DB::statement("UPDATE $table SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?", [now(), (int)$_POST['id']]); redirect('/rules'); }
 if ($path === '/scan/active.json') { header('Content-Type: application/json'); echo json_encode(scan_active_context(), JSON_UNESCAPED_SLASHES); exit; }
-if ($path === '/scan/cleanup-stale' && $method==='POST') { $ctx=scan_active_context(); if ($ctx['stale']) { DB::statement("UPDATE scan_runs SET status='failed', finished_at=?, error_text=?, updated_at=? WHERE status='running'", [now(), 'Marked failed from web cleanup stale scan', now()]); (new ScanLock())->unlock(true); } redirect('/scan/active'); }
+if ($path === '/scan/cleanup-stale' && $method==='POST') { $ctx=scan_active_context(); if ($ctx['stale']) { DB::statement("UPDATE scan_runs SET status='completed', finished_at=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated", [now(), 'Marked completed by web cleanup: stale run had reached 100%', now(), 'Cleanup completed stale 100% scan', now()]); DB::statement("UPDATE scan_runs SET status='failed', finished_at=?, error_text=?, updated_at=? WHERE status='running'", [now(), 'Marked failed from web cleanup stale scan', now()]); (new ScanLock())->unlock(true); } redirect('/scan/active'); }
 if ($path === '/scan/force-unlock' && $method==='POST') { $ctx=scan_active_context(); if ($ctx['stale']) (new ScanLock())->unlock(true); redirect('/scan/active'); }
 if ($path === '/scan/stop' && $method==='POST') { $ctx=scan_active_context(); $pid=(int)($ctx['pid'] ?? 0); if ($pid > 0 && $ctx['pid_alive'] && function_exists('posix_kill')) @posix_kill($pid, SIGTERM); redirect('/scan/active'); }
 if ($path === '/scan/start' && $method==='POST') { $profile=in_array($_POST['profile']??'fast',['fast','standard','deep'],true)?$_POST['profile']:'fast'; $scope=$_POST['scope']??'full'; $value=$_POST['value']??null; $ctx=scan_active_context(); if($ctx['running'] && !$ctx['stale']) redirect(back_url()); $maxSeconds = ($_POST['max_seconds'] ?? '') === '0' ? 0 : (int)($_POST['max_seconds'] ?? 0); start_background_scan($scope,$value,$profile,$maxSeconds); redirect(back_url()); }
@@ -104,7 +107,7 @@ $data = match ($path) {
  '/sites' => ['sites.index',['scanCtx'=>scan_active_context(),'sites'=>DB::select('SELECT s.*, u.name user_name, COUNT(f.id) findings_count, MAX(CASE f.risk WHEN "critical" THEN 4 WHEN "high" THEN 3 WHEN "medium" THEN 2 ELSE 1 END) risk_score FROM sites s LEFT JOIN users u ON u.id=s.server_user_id LEFT JOIN findings f ON f.site_id=s.id AND f.status="new" GROUP BY s.id ORDER BY s.path')]],
  '/findings' => ['findings.index',(function(){ [$w,$p]=finding_filters(); return ['findings'=>DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY CASE risk WHEN "critical" THEN 1 WHEN "high" THEN 2 WHEN "medium" THEN 3 ELSE 4 END, f.id DESC LIMIT 500',$p)]; })()],
  '/logs' => ['logs.index',(function(){ [$w,$p]=log_filters(); return ['events'=>DB::select('SELECT l.*, s.name site_name, u.name user_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY l.id DESC LIMIT 1000',$p)]; })()],
- '/file-changes' => ['file-changes.index',(function(){ [$w,$p]=file_change_filters(); return ['changes'=>DB::select('SELECT fs.*, s.name site_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id '.$w.' ORDER BY COALESCE(fs.last_changed_at,fs.first_seen_at,fs.updated_at) DESC LIMIT 1000',$p)]; })()],
+ '/file-changes' => ['file-changes.index',(function(){ [$w,$p]=file_change_filters(); return ['changes'=>DB::select('SELECT fs.*, s.name site_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id '.$w.' ORDER BY COALESCE(fs.last_changed_at,fs.first_seen_at,fs.updated_at) DESC LIMIT 1000',$p), 'lastRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]; })()],
  '/quarantine' => ['quarantine.index',['items'=>DB::select('SELECT * FROM quarantine_items ORDER BY id DESC')]],
  '/rules' => ['rules.index',['rules'=>DB::select('SELECT * FROM rules ORDER BY enabled DESC,risk DESC,name'),'allow'=>DB::select('SELECT * FROM allowlist_rules ORDER BY enabled DESC,name')]],
  '/settings' => ['settings.index',['settings'=>DB::select('SELECT * FROM settings ORDER BY '.DB::quoteIdentifier('key'))]],

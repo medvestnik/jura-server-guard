@@ -19,14 +19,18 @@ class ScannerService
     private bool $limitReached = false;
     private int $lastDbProgressFiles = 0;
     private int $lastDbProgressAt = 0;
+    private array $diffStats = ['files_seen_total'=>0,'files_new'=>0,'files_modified'=>0,'files_deleted'=>0,'files_changed_total'=>0,'files_analyzed'=>0,'files_skipped_unchanged'=>0];
     public function __construct(private ?RuleRepository $rules = null) { $this->rules ??= new RuleRepository(); }
 
     public function scan(string $scopeType = 'full', ?string $scopeValue = null, array $options = []): int
     {
         $profile = $this->profile($options);
+        $this->diffStats = ['files_seen_total'=>0,'files_new'=>0,'files_modified'=>0,'files_deleted'=>0,'files_changed_total'=>0,'files_analyzed'=>0,'files_skipped_unchanged'=>0];
+        $scanMode = $this->scanMode($options);
+        $previousRunId = $this->previousRunId($scopeType, $scopeValue);
         $pid = getmypid() ?: null;
         $totalEstimated = $this->estimateTotalFiles($scopeType, $scopeValue, $options);
-        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,pid,total_files_estimated,last_heartbeat_at,progress_message,files_scanned,skipped_media,skipped_directories,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$profile,$pid,$totalEstimated,now(),'Starting scan',now(),now()]);
+        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,pid,total_files_estimated,last_heartbeat_at,progress_message,scan_mode,previous_scan_id,files_scanned,skipped_media,skipped_directories,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$profile,$pid,$totalEstimated,now(),'Starting scan',$scanMode,$previousRunId,now(),now()]);
         $files = 0; $findings = 0;
         $stop = function (string $signal) use (&$runId, &$files, &$findings): void {
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', ['stopped', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $signal, now(), $signal, now(), $runId]);
@@ -38,6 +42,7 @@ class ScannerService
             pcntl_signal(SIGINT, fn() => $stop('Stopped by SIGINT'));
         }
         try {
+            $GLOBALS['__guard_scan_run_id'] = $runId;
             $inv = new InventoryService();
             $sites = match ($scopeType) { 'user' => $inv->refresh($scopeValue, null, $options), 'site' => $inv->refresh(null, $scopeValue, $options), default => $inv->refresh(null, null, $options) };
             $this->progress($options, sprintf('Scan #%d [%s]: %d site(s) selected for %s%s', $runId, $this->profile($options), count($sites), $scopeType, $scopeValue ? ': '.$scopeValue : '')); 
@@ -48,7 +53,7 @@ class ScannerService
             if (!($options['skip_logs'] ?? false)) (new LogAnalyzerService())->analyze();
             $status = $this->limitReached ? 'completed_with_limit' : 'completed';
             $error = $this->limitReached ? 'Stopped by max files or max seconds; scan may be incomplete.' : null;
-            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, updated_at=? WHERE id=?', [$status, now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $error, now(), $runId]);
+            DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, last_heartbeat_at=?, progress_message=?, files_seen_total=?, files_new=?, files_modified=?, files_deleted=?, files_changed_total=?, files_analyzed=?, files_skipped_unchanged=?, diff_summary=?, updated_at=? WHERE id=?', [$status, now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $error, now(), ucfirst(str_replace('_',' ', $status)), $this->diffStats['files_seen_total'], $this->diffStats['files_new'], $this->diffStats['files_modified'], $this->diffStats['files_deleted'], $this->diffStats['files_changed_total'], $this->diffStats['files_analyzed'], $this->diffStats['files_skipped_unchanged'], json_encode($this->diffStats, JSON_UNESCAPED_SLASHES), now(), $runId]);
             $this->progress($options, "Scan #$runId $status: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories}");
             return $runId;
         } catch (Throwable $e) {
@@ -59,7 +64,7 @@ class ScannerService
 
     private function scanSite(array $site, int $runId, array $options, int $baseFiles = 0, int $baseFindings = 0): array
     {
-        $start = time(); $count = 0; $findings = 0; $seen = [];
+        $start = time(); $count = 0; $findings = 0; $seen = []; $mode = $this->scanMode($options);
         $maxFiles = (int)($options['max_files'] ?? config('guard.max_files_per_site'));
         $maxSeconds = (int)($options['max_seconds'] ?? config('guard.max_scan_seconds_per_site'));
         $dryRun = (bool)($options['dry_run'] ?? false);
@@ -76,8 +81,12 @@ class ScannerService
             $relative = ltrim(str_replace($site['path'], '', $path), '/');
             $pathHash = hash('sha256', $path);
             $previous = DB::first('SELECT * FROM file_snapshots WHERE path_hash=? AND path=?', [$pathHash, $path]);
-            $meta = $this->meta($path, $previous, $relative);
+            $meta = $this->meta($path, $previous, $relative, $options);
             $change = $dryRun ? 'dry-run' : $this->snapshot($site['id'], $path, $pathHash, $relative, $meta, $previous);
+            $this->accountDiff($change);
+            $analyze = $mode === 'full' || $change !== 'same' || $this->heavyAnalysisCandidate($path, $site['path'], $relative, $meta);
+            if (!$analyze) { $this->diffStats['files_skipped_unchanged']++; continue; }
+            $this->diffStats['files_analyzed']++;
             foreach ($this->detect($site, $path, $relative, $meta, $change) as $finding) {
                 if (!$dryRun) $this->upsertFinding($runId, $site['id'], $path, $meta, $finding);
                 $findings++;
@@ -85,7 +94,7 @@ class ScannerService
             if ($count % 100 === 0) $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $path, "Scanning {$site['name']}");
             if ($count % 1000 === 0) $this->progress($options, "Progress {$site['name']}: files=$count findings=$findings elapsed=".(time()-$start).'s');
         }
-        if (!$dryRun) foreach (DB::select('SELECT id,path FROM file_snapshots WHERE site_id=? AND is_missing=0', [$site['id']]) as $snap) if (!isset($seen[$snap['path']]) && !file_exists($snap['path'])) DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,updated_at=? WHERE id=?', [now(),now(),$snap['id']]);
+        if (!$dryRun) foreach (DB::select('SELECT id,path FROM file_snapshots WHERE site_id=? AND is_missing=0', [$site['id']]) as $snap) if (!isset($seen[$snap['path']]) && !file_exists($snap['path'])) { $this->diffStats['files_deleted']++; $this->diffStats['files_changed_total']++; DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,last_changed_scan_id=?,updated_at=? WHERE id=?', [now(),$runId,now(),$snap['id']]); }
         $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $site['path'] ?? null, "Finished {$site['name']}", true);
         $this->progress($options, "Finished {$site['name']}: files=$count findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories} elapsed=".(time()-$start).'s');
         return [$count, $findings];
@@ -168,17 +177,18 @@ class ScannerService
         });
     }
 
-    private function meta(string $path, ?array $previous = null, string $relative = ''): array
+    private function meta(string $path, ?array $previous = null, string $relative = '', array $options = []): array
     {
         $stat = @stat($path) ?: [];
+        $inode = isset($stat['ino']) ? (string)$stat['ino'] : null; $mode = isset($stat['mode']) ? (string)$stat['mode'] : null; $uid = isset($stat['uid']) ? (string)$stat['uid'] : null; $gid = isset($stat['gid']) ? (string)$stat['gid'] : null; $ctime = isset($stat['ctime']) ? gmdate('Y-m-d H:i:s',$stat['ctime']) : null;
         $size = @filesize($path) ?: 0;
         $mtime = isset($stat['mtime']) ? gmdate('Y-m-d H:i:s',$stat['mtime']) : null;
         $owner = function_exists('posix_getpwuid') ? (posix_getpwuid($stat['uid'] ?? 0)['name'] ?? (string)($stat['uid'] ?? '')) : (string)($stat['uid'] ?? '');
         $group = function_exists('posix_getgrgid') ? (posix_getgrgid($stat['gid'] ?? 0)['name'] ?? (string)($stat['gid'] ?? '')) : (string)($stat['gid'] ?? '');
         $permissions = substr(sprintf('%o', @fileperms($path)), -4);
         $sha = $previous['sha256'] ?? null;
-        if ($this->shouldHash($path, $relative, $size, $previous, $mtime, $permissions, $owner)) $sha = @hash_file('sha256',$path) ?: null;
-        return ['size'=>$size, 'mtime'=>$mtime, 'sha256'=>$sha, 'owner'=>$owner, 'group'=>$group, 'permissions'=>$permissions];
+        if ($this->shouldHash($path, $relative, $size, $previous, $mtime, $permissions, $owner) || $this->scanMode($options) === 'full') $sha = @hash_file('sha256',$path) ?: null;
+        return ['size'=>$size, 'mtime'=>$mtime, 'ctime'=>$ctime, 'inode'=>$inode, 'mode'=>$mode, 'uid'=>$uid, 'gid'=>$gid, 'extension'=>strtolower(pathinfo($path, PATHINFO_EXTENSION)), 'file_category'=>$this->fileCategory($path, $relative), 'sha256'=>$sha, 'owner'=>$owner, 'group'=>$group, 'permissions'=>$permissions];
     }
 
     private function shouldHash(string $path, string $rel, int $size, ?array $previous, ?string $mtime, string $permissions, string $owner): bool
@@ -195,15 +205,25 @@ class ScannerService
     private function snapshot(int $siteId, string $path, string $pathHash, string $relative, array $m, ?array $row): string
     {
         $groupCol = DB::quoteIdentifier('group');
-        if (!$row) { DB::insert("INSERT INTO file_snapshots (site_id,path,path_hash,relative_path,owner,$groupCol,permissions,size,mtime,sha256,first_seen_at,last_seen_at,is_missing,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)", [$siteId,$path,$pathHash,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['sha256'],now(),now(),now(),now()]); return 'new'; }
-        $changed = ($row['sha256'] !== $m['sha256'] || (string)$row['mtime'] !== (string)$m['mtime'] || (string)$row['permissions'] !== (string)$m['permissions'] || (string)$row['owner'] !== (string)$m['owner'] || (int)$row['size'] !== (int)$m['size']);
-        DB::statement("UPDATE file_snapshots SET site_id=?,path_hash=?,relative_path=?,owner=?,$groupCol=?,permissions=?,size=?,mtime=?,sha256=?,last_seen_at=?,last_changed_at=CASE WHEN ? THEN ? ELSE last_changed_at END,is_missing=0,updated_at=? WHERE id=?", [$siteId,$pathHash,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['sha256'],now(),$changed?1:0,now(),now(),$row['id']]);
+        if (!$row) { DB::insert("INSERT INTO file_snapshots (site_id,path,path_hash,relative_path,owner,$groupCol,permissions,size,mtime,ctime,inode,mode,uid,gid,extension,file_category,sha256,first_seen_at,last_seen_at,first_seen_scan_id,last_seen_scan_id,last_changed_scan_id,is_missing,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)", [$siteId,$path,$pathHash,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['ctime'],$m['inode'],$m['mode'],$m['uid'],$m['gid'],$m['extension'],$m['file_category'],$m['sha256'],now(),now(),$GLOBALS['__guard_scan_run_id'] ?? null,$GLOBALS['__guard_scan_run_id'] ?? null,$GLOBALS['__guard_scan_run_id'] ?? null,now(),now()]); return 'new'; }
+        $changed = !$this->metadataUnchanged($row, $m);
+        $sha = $m['sha256'] ?? $row['sha256'] ?? null;
+        DB::statement("UPDATE file_snapshots SET site_id=?,path_hash=?,relative_path=?,owner=?,$groupCol=?,permissions=?,size=?,mtime=?,ctime=?,inode=?,mode=?,uid=?,gid=?,extension=?,file_category=?,sha256=?,last_seen_at=?,last_seen_scan_id=?,last_changed_scan_id=CASE WHEN ? THEN ? ELSE last_changed_scan_id END,last_changed_at=CASE WHEN ? THEN ? ELSE last_changed_at END,is_missing=0,updated_at=? WHERE id=?", [$siteId,$pathHash,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['ctime'],$m['inode'],$m['mode'],$m['uid'],$m['gid'],$m['extension'],$m['file_category'],$sha,now(),$GLOBALS['__guard_scan_run_id'] ?? null,$changed?1:0,$GLOBALS['__guard_scan_run_id'] ?? null,$changed?1:0,now(),now(),$row['id']]);
         return $changed ? 'changed' : 'same';
     }
+
+    private function metadataUnchanged(array $row, array $m): bool { foreach (['size','mtime','ctime','mode','uid','gid'] as $k) if ((string)($row[$k] ?? '') !== (string)($m[$k] ?? '')) return false; if (!empty($row['inode']) && !empty($m['inode']) && (string)$row['inode'] !== (string)$m['inode']) return false; return true; }
+    private function scanMode(array $options): string { $profile=$this->profile($options); if (!empty($options['full_rescan'])) return 'full'; if (!empty($options['changed_only'])) return 'changed_only'; if (!empty($options['diff'])) return 'differential'; return $profile === 'deep' ? 'full' : 'differential'; }
+    private function previousRunId(string $scopeType, ?string $scopeValue): ?int { $sql = $scopeValue === null ? "SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND scope_type=? AND scope_value IS NULL ORDER BY id DESC LIMIT 1" : "SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND scope_type=? AND scope_value=? ORDER BY id DESC LIMIT 1"; $params = $scopeValue === null ? [$scopeType] : [$scopeType,$scopeValue]; $r=DB::first($sql, $params); return $r ? (int)$r['id'] : null; }
+    private function accountDiff(string $change): void { $this->diffStats['files_seen_total']++; if ($change==='new') { $this->diffStats['files_new']++; $this->diffStats['files_changed_total']++; } elseif ($change==='changed') { $this->diffStats['files_modified']++; $this->diffStats['files_changed_total']++; } }
+    private function fileCategory(string $path, string $rel): string { if ($this->isPhpLike($path)) return 'php'; if ($this->isWebConfig($path)) return 'config'; if ($this->isOrdinaryMedia($path)) return 'media'; return strtolower(pathinfo($path, PATHINFO_EXTENSION) ?: 'other'); }
+    private function heavyAnalysisCandidate(string $path, string $root, string $rel, array $m): bool { $base=basename($path); if ($this->isWebConfig($path) || preg_match('/^google.*\.html$/i',$base) || str_starts_with($base,'.')) return true; if ($this->suspiciousLocation($path) || $this->isValidationPath($path)) return true; if ($this->isPhpLike($path) && preg_match('#/(uploads|cache|tmp|media|images|storage)/#i',$path)) return true; if (preg_match('/\.(phar|phtml|shtml|cgi|pl|py|sh|asp|aspx)$/i',$path)) return true; if (DB::first("SELECT id FROM findings WHERE path_hash=? AND status NOT IN ('ignored','quarantined') LIMIT 1", [hash('sha256',$path)])) return true; return $this->structuralSuspiciousPath($path); }
+    private function structuralSuspiciousPath(string $path): bool { return (bool)preg_match('#/(404SBG|configCWE|FSS-NPY)(/|$)|\.txt404(/|$)|/(WHMCS|Joomla|Drupal|OpenCart|PrestaShop|env|accesshash|admin-env)(/|$)#i', $path); }
 
     private function detect(array $site, string $path, string $relative, array $m, string $change): array
     {
         $out = []; $isPhp = $this->isPhpLike($path); $explicitlyAllowed = $this->rules->isAllowed($path, $m['sha256']);
+        if ($this->structuralSuspiciousPath($path)) $out[] = ['risk'=>'critical','type'=>'malicious_structure','rule_key'=>'structural-malicious-directory','title'=>'Suspicious malicious directory structure','description'=>'Path matches known fake CMS/env/404SBG/configCWE/FSS-NPY structure used by nested loaders.','matched'=>[['name'=>'structural-path','risk'=>'critical','pattern'=>'fake CMS/env loader directory','snippet'=>$relative]], 'log_ids'=>[]];
         $content = ($isPhp || $this->isWebConfig($path) || $this->isValidationPath($path) || $this->isSeoScannable($path)) ? @file_get_contents($path, false, null, 0, config('guard.max_file_read_bytes')) ?: '' : '';
         $loaderEvidence = $this->selfReadingPackedLoaderEvidence($content);
         $allowed = $explicitlyAllowed || ($this->knownFalsePositivePath($path) && !$loaderEvidence);
