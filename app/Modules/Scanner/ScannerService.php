@@ -17,6 +17,8 @@ class ScannerService
     private int $skippedDirectories = 0;
     private int $skippedMedia = 0;
     private bool $limitReached = false;
+    private int $lastDbProgressFiles = 0;
+    private int $lastDbProgressAt = 0;
     public function __construct(private ?RuleRepository $rules = null) { $this->rules ??= new RuleRepository(); }
 
     public function scan(string $scopeType = 'full', ?string $scopeValue = null, array $options = []): int

@@ -185,23 +185,37 @@ class Application
         $pid = (int)($run['pid'] ?? $lock['pid'] ?? 0);
         $started = $run['started_at'] ?? $lock['started_at'] ?? null;
         $lastHeartbeat = $run['last_heartbeat_at'] ?? null;
-        $stale = $lastHeartbeat ? (time() - strtotime($lastHeartbeat) > 60) : false;
+        $heartbeatAge = $lastHeartbeat ? max(0, time() - strtotime($lastHeartbeat)) : null;
+        $pidAlive = $pid > 0 && $this->pidAlive($pid);
+        $stale = (bool)$run && ((!$pidAlive && $pid > 0) || ($heartbeatAge !== null && $heartbeatAge > 90));
         $elapsed = $started ? $this->formatSeconds(max(0, time() - strtotime($started))) : 'n/a';
+        $files = (int)($run['files_scanned'] ?? 0);
+        $total = (int)($run['total_files_estimated'] ?? 0);
+        $progress = $total > 0 ? round($files * 100 / $total, 1).'%' : 'unknown';
         echo "PID: ".($pid ?: 'n/a')."\n";
+        echo "PID alive: ".($pidAlive ? 'yes' : 'no')."\n";
         echo "scan_run id: ".($run['id'] ?? 'n/a')."\n";
         echo "profile: ".($run['profile'] ?? 'n/a')."\n";
         echo "scope: ".(($run['scope_type'] ?? 'n/a').(isset($run['scope_value']) && $run['scope_value'] !== null ? ' '.$run['scope_value'] : ''))."\n";
-        echo "files scanned: ".($run['files_scanned'] ?? 0)."\n";
+        echo "files scanned: ".$files."\n";
+        echo "total estimated: ".($total ?: 'unknown')."\n";
+        echo "progress: $progress\n";
         echo "skipped media: ".($run['skipped_media'] ?? 0)."\n";
         echo "skipped directories: ".($run['skipped_directories'] ?? 0)."\n";
         echo "findings: ".($run['findings_count'] ?? 0)."\n";
+        echo "new findings: ".($run['findings_new'] ?? 0)."\n";
+        echo "current site: ".($run['current_site'] ?? 'n/a')."\n";
+        echo "current path: ".($run['current_path'] ?? 'n/a')."\n";
         echo "started_at: ".($started ?? 'n/a')."\n";
         echo "last heartbeat: ".($lastHeartbeat ?? 'n/a')."\n";
+        echo "heartbeat age: ".($heartbeatAge !== null ? $heartbeatAge.'s' : 'n/a')."\n";
         echo "elapsed time: $elapsed\n";
         echo "stale: ".($stale ? 'yes' : 'no')."\n";
         if ($lock) echo "lock: ".($lock['command'] ?? 'unknown')."\n";
         return 0;
     }
+
+    private function pidAlive(int $pid): bool { return $pid > 0 && (function_exists('posix_kill') ? @posix_kill($pid, 0) : is_dir('/proc/'.$pid)); }
 
     private function formatSeconds(int $seconds): string
     {
