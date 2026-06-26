@@ -82,6 +82,17 @@ class Application
         $this->ensureColumn('scan_runs', 'total_files_estimated', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
         $this->ensureColumn('scan_runs', 'last_heartbeat_at', $driver === 'mysql' ? 'DATETIME NULL' : 'TEXT NULL');
         $this->ensureColumn('scan_runs', 'progress_message', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+
+        $this->ensureColumn('scan_runs', 'scan_mode', $driver === 'mysql' ? "VARCHAR(32) NOT NULL DEFAULT 'differential'" : "TEXT NOT NULL DEFAULT 'differential'");
+        $this->ensureColumn('scan_runs', 'previous_scan_id', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
+        foreach (['files_seen_total','files_new','files_modified','files_deleted','files_changed_total','files_analyzed','files_skipped_unchanged'] as $col) $this->ensureColumn('scan_runs', $col, $driver === 'mysql' ? 'BIGINT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0');
+        $this->ensureColumn('scan_runs', 'diff_summary', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+        foreach (['ctime','inode','mode','uid','gid','extension','file_category','content_hash','first_seen_scan_id','last_seen_scan_id','last_changed_scan_id','baseline_status','trusted_baseline_at'] as $col) {
+            $def = in_array($col, ['first_seen_scan_id','last_seen_scan_id','last_changed_scan_id'], true) ? ($driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL') : ($driver === 'mysql' ? 'VARCHAR(255) NULL' : 'TEXT NULL');
+            if ($col === 'content_hash') $def = $driver === 'mysql' ? 'CHAR(64) NULL' : 'TEXT NULL';
+            if ($col === 'trusted_baseline_at') $def = $driver === 'mysql' ? 'DATETIME NULL' : 'TEXT NULL';
+            $this->ensureColumn('file_snapshots', $col, $def);
+        }
         $this->backfillScanRunCompatibilityColumns();
         $this->ensureRestoreActionsTable($driver);
 
@@ -171,14 +182,15 @@ class Application
         finally { if (!$options['no_lock']) $lock->release(); }
     }
     private function logs(array $argv): int { $o=$this->scanOptions($argv); $lock=new ScanLock(); if(!$o['no_lock']) $lock->acquire('guard:logs',$o['force']); try { $n=(new LogAnalyzerService())->analyze(); echo "Stored suspicious log events: $n\n"; return 0; } finally { if(!$o['no_lock']) $lock->release(); } }
-    private function scanOptions(array $argv): array { return ['profile'=>$this->optionString($argv,'--profile') ?? (string)config('guard.scan_profile','fast'), 'force'=>in_array('--force',$argv,true), 'no_lock'=>in_array('--no-lock',$argv,true), 'include_old'=>in_array('--include-old',$argv,true), 'include_storage'=>in_array('--include-storage',$argv,true), 'include_backups'=>in_array('--include-backups',$argv,true), 'dry_run'=>in_array('--dry-run',$argv,true), 'verbose'=>in_array('--verbose',$argv,true), 'max_files'=>$this->optionInt($argv,'--max-files'), 'max_seconds'=>$this->optionInt($argv,'--max-seconds')]; }
+    private function scanOptions(array $argv): array { return ['profile'=>$this->optionString($argv,'--profile') ?? (string)config('guard.scan_profile','fast'), 'force'=>in_array('--force',$argv,true), 'no_lock'=>in_array('--no-lock',$argv,true), 'include_old'=>in_array('--include-old',$argv,true), 'include_storage'=>in_array('--include-storage',$argv,true), 'include_backups'=>in_array('--include-backups',$argv,true), 'dry_run'=>in_array('--dry-run',$argv,true), 'verbose'=>in_array('--verbose',$argv,true), 'max_files'=>$this->optionInt($argv,'--max-files'), 'max_seconds'=>$this->optionInt($argv,'--max-seconds'), 'diff'=>in_array('--diff',$argv,true), 'changed_only'=>in_array('--changed-only',$argv,true), 'full_rescan'=>in_array('--full-rescan',$argv,true)]; }
     private function optionInt(array $argv, string $name): ?int { foreach($argv as $a) if(str_starts_with($a,$name.'=')) return (int)substr($a,strlen($name)+1); return null; }
     private function optionString(array $argv, string $name): ?string { foreach($argv as $a) if(str_starts_with($a,$name.'=')) return substr($a,strlen($name)+1); return null; }
 
     private function scanActive(): int
     {
+        if (DB::first("SELECT id FROM scan_runs WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated LIMIT 1")) { DB::statement("UPDATE scan_runs SET status='completed', finished_at=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated", [now(), 'Auto-completed by guard:scan-active because progress reached 100%', now(), 'Auto-completed stale 100% scan', now()]); (new ScanLock())->unlock(true); }
         $lock = (new ScanLock())->read();
-        $run = DB::first("SELECT * FROM scan_runs WHERE status='running' ORDER BY id DESC LIMIT 1") ?: [];
+        $run = DB::first("SELECT * FROM scan_runs WHERE status='running' AND NOT (total_files_estimated > 0 AND files_scanned >= total_files_estimated) ORDER BY id DESC LIMIT 1") ?: [];
         $running = (bool)$lock || (bool)$run;
         echo "Scan running: ".($running ? 'yes' : 'no')."\n";
         if (!$running) return 0;
@@ -223,7 +235,7 @@ class Application
     }
 
     private function scanUnlock(array $argv): int { echo (new ScanLock())->unlock(in_array('--force',$argv,true))."\n"; return 0; }
-    private function cleanupRunningScans(array $argv): int { $h=$this->optionInt($argv,'--hours') ?? 2; DB::statement("UPDATE scan_runs SET status='failed', finished_at=?, error_text=?, updated_at=? WHERE status='running' AND started_at < ".DB::nowMinusHoursSql($h), [now(), "Marked failed by cleanup after {$h} hours", now()]); echo "Old running scan_runs marked failed.\n"; return 0; }
+    private function cleanupRunningScans(array $argv): int { $h=$this->optionInt($argv,'--hours') ?? 2; DB::statement("UPDATE scan_runs SET status='completed', finished_at=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated", [now(), 'Marked completed by cleanup: stale run had reached 100%', now(), 'Cleanup completed stale 100% scan', now()]); DB::statement("UPDATE scan_runs SET status='failed', finished_at=?, error_text=?, updated_at=? WHERE status='running' AND started_at < ".DB::nowMinusHoursSql($h), [now(), "Marked failed by cleanup after {$h} hours", now()]); (new ScanLock())->unlock(true); echo "Old running scan_runs cleaned up.\n"; return 0; }
     private function prune(array $argv): int { $d=$this->optionInt($argv,'--days') ?? 30; $cut=gmdate('Y-m-d H:i:s', time()-$d*86400); foreach(['log_events','scan_runs'] as $t) DB::statement("DELETE FROM $t WHERE created_at < ?",[$cut]); DB::statement("DELETE FROM file_snapshots WHERE is_missing=1 AND updated_at < ?",[$cut]); echo "Pruned data older than $d days.\n"; return 0; }
     private function dbStats(): int { echo "DB driver: ".DB::driver()."\n"; foreach(['users','sites','file_snapshots','findings','log_events','scan_runs'] as $t) echo "$t: ".(DB::first("SELECT COUNT(*) c FROM $t")['c']??0)."\n"; if(DB::driver()==='sqlite') echo "DB size: ".(is_file(DB::path()) ? filesize(DB::path()) : 0)." bytes\n"; else foreach(DB::select('SELECT table_name, table_rows, ROUND((data_length+index_length)/1024/1024,2) mb FROM information_schema.tables WHERE table_schema=DATABASE() ORDER BY (data_length+index_length) DESC LIMIT 10') as $r) echo "{$r['table_name']}: {$r['table_rows']} rows, {$r['mb']} MB\n"; return 0; }
     private function optimizeDb(): int { if(DB::driver()==='sqlite') { DB::pdo()->exec('VACUUM'); DB::pdo()->exec('ANALYZE'); } else foreach(['admin_users','users','sites','scan_runs','file_snapshots','findings','log_events','quarantine_items','rules','allowlist_rules','settings','ai_analyses'] as $t) DB::pdo()->exec("OPTIMIZE TABLE $t"); echo "Database optimized.\n"; return 0; }
