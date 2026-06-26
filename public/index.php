@@ -9,26 +9,6 @@ if ($path === '/login') { echo view('auth.login'); exit; }
 if ($path === '/logout') { Auth::logout(); redirect('/login'); }
 Auth::require();
 
-
-function scan_active_context(): array {
-    $run = DB::first("SELECT * FROM scan_runs WHERE status='running' ORDER BY id DESC LIMIT 1");
-    $lock = (new ScanLock())->read();
-    return ['run'=>$run, 'lock'=>$lock, 'running'=>(bool)$run || (bool)$lock];
-}
-function scan_pid_alive(int $pid): bool { return $pid > 0 && (function_exists('posix_kill') ? @posix_kill($pid, 0) : is_dir('/proc/'.$pid)); }
-function scan_is_stale(?array $run): bool { return $run && !empty($run['last_heartbeat_at']) && time() - strtotime($run['last_heartbeat_at']) > 60; }
-function format_duration(int $seconds): string { return sprintf('%02d:%02d:%02d', intdiv($seconds,3600), intdiv($seconds%3600,60), $seconds%60); }
-function start_background_scan(string $scope, ?string $value, string $profile): void {
-    $cmd = [PHP_BINARY, base_path('artisan'), $scope === 'site' ? 'guard:scan-site' : ($scope === 'user' ? 'guard:scan-user' : 'guard:scan')];
-    if ($scope !== 'full') $cmd[] = (string)$value;
-    $cmd[] = '--profile='.$profile;
-    $cmd[] = '--lock-label=web scan '.$scope.' '.$profile;
-    $parts = array_map('escapeshellarg', $cmd);
-    $out = storage_path('logs/web-scan.log');
-    if (!is_dir(dirname($out))) mkdir(dirname($out), 0750, true);
-    exec(implode(' ', $parts).' >> '.escapeshellarg($out).' 2>&1 &');
-}
-
 function send_csv(string $filename, array $rows): void {
     header('Content-Type: text/csv; charset=UTF-8');
     header('Content-Disposition: attachment; filename="'.$filename.'"');
@@ -76,7 +56,11 @@ if ($path === '/finding/allowlist' && $method==='POST') { $f=DB::first('SELECT *
 if ($path === '/finding/quarantine' && $method==='POST' && config('guard.web_actions_enabled')) { (new QuarantineService())->quarantine((int)$_POST['id'], 'Web panel quarantine'); redirect('/quarantine'); }
 if ($path === '/quarantine/restore' && $method==='POST' && config('guard.web_actions_enabled')) { (new QuarantineService())->restore((int)$_POST['id']); redirect('/quarantine'); }
 if ($path === '/rules/toggle' && $method==='POST') { $table=($_POST['table']??'rules')==='allowlist_rules'?'allowlist_rules':'rules'; DB::statement("UPDATE $table SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?", [now(), (int)$_POST['id']]); redirect('/rules'); }
-if ($path === '/scan/start' && $method==='POST') { $profile=in_array($_POST['profile']??'fast',['fast','standard','deep'],true)?$_POST['profile']:'fast'; $scope=$_POST['scope']??'full'; $value=$_POST['value']??null; if(DB::first("SELECT id FROM scan_runs WHERE status='running' AND scope_type=? AND COALESCE(scope_value,'')=COALESCE(?, '')",[$scope,$value])) redirect('/'); $lock=new ScanLock(); $lock->acquire('web scan '.$scope.' '.$profile,false); try { $maxSeconds = ($_POST['max_seconds'] ?? '') === '0' ? 0 : (int)($_POST['max_seconds'] ?? 0); $opts=['profile'=>$profile,'quiet'=>true]; if ($maxSeconds >= 0) $opts['max_seconds']=$maxSeconds; (new ScannerService())->scan($scope,$value,$opts); } finally { $lock->release(); } redirect('/'); }
+if ($path === '/scan/start' && $method==='POST') { $profile=in_array($_POST['profile']??'fast',['fast','standard','deep'],true)?$_POST['profile']:'fast'; $scope=in_array($_POST['scope']??'full',['full','user','site'],true)?$_POST['scope']:'full'; $value=$_POST['value']??null; if (scan_active_context()['exists']) { flash('Scan is already running.'); redirect_back('/'); } $maxSeconds = ($_POST['max_seconds'] ?? '') === '0' ? 0 : (int)($_POST['max_seconds'] ?? 0); $startedAfter=now(); start_background_scan($scope,$value,$profile,$maxSeconds); $id=null; for($i=0;$i<10;$i++){ usleep(100000); $r=DB::first("SELECT id FROM scan_runs WHERE status='running' AND scope_type=? AND COALESCE(scope_value,'')=COALESCE(?, '') AND started_at>=? ORDER BY id DESC LIMIT 1",[$scope,$value,$startedAfter]); if($r){$id=$r['id']; break;} } flash($id ? 'Scan started: #'.$id : 'Scan starting in background'); redirect_back('/'); }
+if ($path === '/scan/active.json') { header('Content-Type: application/json'); echo json_encode(scan_active_context(), JSON_UNESCAPED_SLASHES); exit; }
+if ($path === '/scan/cleanup-stale' && $method==='POST') { $ctx=scan_active_context(); if($ctx['stale'] && $ctx['run']) DB::statement('UPDATE scan_runs SET status=?, finished_at=?, error_text=?, updated_at=? WHERE id=?', ['failed', now(), 'Cleaned up stale scan from web panel', now(), (int)$ctx['run']['id']]); (new ScanLock())->unlock(true); flash('Stale scan cleaned up.'); redirect_back('/'); }
+if ($path === '/scan/unlock' && $method==='POST') { (new ScanLock())->unlock(true); flash('Scan lock removed.'); redirect_back('/'); }
+if ($path === '/scan/stop' && $method==='POST') { $ctx=scan_active_context(); if($ctx['run']) { $pid=(int)($ctx['run']['pid']??0); if($pid>0 && scan_pid_alive($pid) && function_exists('posix_kill')) @posix_kill($pid, 15); DB::statement('UPDATE scan_runs SET status=?, finished_at=?, error_text=?, updated_at=? WHERE id=?', ['stopped', now(), 'Stopped from web panel', now(), (int)$ctx['run']['id']]); } (new ScanLock())->unlock(true); flash('Scan stopped.'); redirect_back('/'); }
 if ($path === '/settings' && $method==='POST') { $keyCol=DB::quoteIdentifier('key'); foreach ($_POST['settings'] ?? [] as $k=>$v) { if(DB::first("SELECT id FROM settings WHERE $keyCol=?",[$k])) DB::statement("UPDATE settings SET value=?,updated_at=? WHERE $keyCol=?",[$v,now(),$k]); else DB::insert("INSERT INTO settings ($keyCol,value,created_at,updated_at) VALUES (?,?,?,?)",[$k,$v,now(),now()]); } redirect('/settings'); }
 if ($path === '/findings/export.csv') { [$w,$p]=finding_filters(); send_csv('findings.csv', DB::select("SELECT f.id,f.risk,f.status,f.type,u.name user_name,s.name site_name,f.path,f.title,f.sha256,f.first_seen_at,f.last_seen_at FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY f.id DESC LIMIT 50000", $p)); }
 if ($path === '/logs/export.csv') { [$w,$p]=log_filters(); send_csv('log_events.csv', DB::select("SELECT l.id,l.risk,l.event_type,u.name user_name,s.name site_name,l.ip,l.method,l.uri,l.status_code,l.user_agent,l.referer,l.created_at FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY l.id DESC LIMIT 50000", $p)); }
