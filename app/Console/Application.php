@@ -25,7 +25,7 @@ class Application
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
     }
 
-    private function help(): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run]\n  guard:scan-user {user}\n  guard:scan-site {path}\n  guard:logs [--force] [--no-lock]\n  guard:scan-active
+    private function help(): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--skip-logs]\n  guard:logs [--force] [--no-lock]\n  guard:scan-active
   guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
     private function noop(string $cmd): int { if ($cmd==='key:generate') $this->ensureKey(); echo "$cmd complete.\n"; return 0; }
     private function ensureKey(): void { $env=base_path('.env'); if (!is_file($env) && is_file(base_path('.env.example'))) copy(base_path('.env.example'), $env); if (is_file($env)) { $c=file_get_contents($env); if (preg_match('/^APP_KEY=\s*$/m',$c)) file_put_contents($env,preg_replace('/^APP_KEY=\s*$/m','APP_KEY=base64:'.base64_encode(random_bytes(32)),$c)); } }
@@ -182,7 +182,10 @@ class Application
         finally { if (!$options['no_lock']) $lock->release(); }
     }
     private function logs(array $argv): int { $o=$this->scanOptions($argv); $lock=new ScanLock(); if(!$o['no_lock']) $lock->acquire('guard:logs',$o['force']); try { $n=(new LogAnalyzerService())->analyze(); echo "Stored suspicious log events: $n\n"; return 0; } finally { if(!$o['no_lock']) $lock->release(); } }
-    private function scanOptions(array $argv): array { return ['profile'=>$this->optionString($argv,'--profile') ?? (string)config('guard.scan_profile','fast'), 'force'=>in_array('--force',$argv,true), 'no_lock'=>in_array('--no-lock',$argv,true), 'include_old'=>in_array('--include-old',$argv,true), 'include_storage'=>in_array('--include-storage',$argv,true), 'include_backups'=>in_array('--include-backups',$argv,true), 'dry_run'=>in_array('--dry-run',$argv,true), 'verbose'=>in_array('--verbose',$argv,true), 'max_files'=>$this->optionInt($argv,'--max-files'), 'max_seconds'=>$this->optionInt($argv,'--max-seconds'), 'diff'=>in_array('--diff',$argv,true), 'changed_only'=>in_array('--changed-only',$argv,true), 'full_rescan'=>in_array('--full-rescan',$argv,true)]; }
+    private function scanOptions(array $argv): array {
+        $this->validateOptions($argv, ['--profile','--force','--no-lock','--include-old','--include-storage','--include-backups','--dry-run','--verbose','--max-files','--max-seconds','--diff','--changed-only','--full-rescan','--skip-logs','--lock-label']);
+        return ['profile'=>$this->optionString($argv,'--profile') ?? (string)config('guard.scan_profile','fast'), 'force'=>in_array('--force',$argv,true), 'no_lock'=>in_array('--no-lock',$argv,true), 'include_old'=>in_array('--include-old',$argv,true), 'include_storage'=>in_array('--include-storage',$argv,true), 'include_backups'=>in_array('--include-backups',$argv,true), 'dry_run'=>in_array('--dry-run',$argv,true), 'verbose'=>in_array('--verbose',$argv,true), 'max_files'=>$this->optionInt($argv,'--max-files'), 'max_seconds'=>$this->optionInt($argv,'--max-seconds'), 'diff'=>in_array('--diff',$argv,true), 'changed_only'=>in_array('--changed-only',$argv,true), 'full_rescan'=>in_array('--full-rescan',$argv,true), 'skip_logs'=>in_array('--skip-logs',$argv,true)]; }
+    private function validateOptions(array $argv, array $allowed): void { foreach (array_slice($argv, 2) as $arg) { if (!str_starts_with($arg, '--')) continue; $name = explode('=', $arg, 2)[0]; if (!in_array($name, $allowed, true)) throw new \InvalidArgumentException("Unsupported option: $name"); } }
     private function optionInt(array $argv, string $name): ?int { foreach($argv as $a) if(str_starts_with($a,$name.'=')) return (int)substr($a,strlen($name)+1); return null; }
     private function optionString(array $argv, string $name): ?string { foreach($argv as $a) if(str_starts_with($a,$name.'=')) return substr($a,strlen($name)+1); return null; }
 
@@ -197,10 +200,10 @@ class Application
         $pid = (int)($run['pid'] ?? $lock['pid'] ?? 0);
         $started = $run['started_at'] ?? $lock['started_at'] ?? null;
         $lastHeartbeat = $run['last_heartbeat_at'] ?? null;
-        $heartbeatAge = $lastHeartbeat ? max(0, time() - strtotime($lastHeartbeat)) : null;
+        $heartbeatAge = $lastHeartbeat ? max(0, time() - $this->utcTimestamp($lastHeartbeat)) : null;
         $pidAlive = $pid > 0 && $this->pidAlive($pid);
         $stale = (bool)$run && ((!$pidAlive && $pid > 0) || ($heartbeatAge !== null && $heartbeatAge > 90));
-        $elapsed = $started ? $this->formatSeconds(max(0, time() - strtotime($started))) : 'n/a';
+        $elapsed = $started ? $this->formatSeconds(max(0, time() - $this->utcTimestamp($started))) : 'n/a';
         $files = (int)($run['files_scanned'] ?? 0);
         $total = (int)($run['total_files_estimated'] ?? 0);
         $progress = $total > 0 ? round($files * 100 / $total, 1).'%' : 'unknown';
@@ -226,6 +229,8 @@ class Application
         if ($lock) echo "lock: ".($lock['command'] ?? 'unknown')."\n";
         return 0;
     }
+
+    private function utcTimestamp(string $timestamp): int { return strtotime($timestamp . ' UTC') ?: strtotime($timestamp) ?: time(); }
 
     private function pidAlive(int $pid): bool { return $pid > 0 && (function_exists('posix_kill') ? @posix_kill($pid, 0) : is_dir('/proc/'.$pid)); }
 

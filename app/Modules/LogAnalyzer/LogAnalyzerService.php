@@ -6,18 +6,24 @@ use App\Support\DB;
 class LogAnalyzerService
 {
     private int $skippedInserts = 0;
-    public function analyze(): int
+    public function analyze(array $options = []): int
     {
         $count = 0; $this->skippedInserts = 0;
-        foreach (config('guard.log_paths') as $pattern) foreach (glob($pattern) ?: [] as $log) $count += $this->analyzeFile($log);
+        foreach (config('guard.log_paths') as $pattern) foreach (glob($pattern) ?: [] as $log) {
+            if ($this->deadlineReached($options)) break 2;
+            if (!$this->logMatchesSiteScope($log, $options['site_paths'] ?? [])) continue;
+            $count += $this->analyzeFile($log, $options);
+        }
         if ($this->skippedInserts > 0) fwrite(STDERR, "Skipped log events due to DB insert errors: {$this->skippedInserts}\n");
         return $count;
     }
-    private function analyzeFile(string $path): int
+    private function analyzeFile(string $path, array $options = []): int
     {
         if (!is_readable($path)) return 0;
         $lines = @file($path, FILE_IGNORE_NEW_LINES) ?: []; $count = 0; $start = max(0, count($lines) - 5000);
         for ($i=$start; $i<count($lines); $i++) {
+            if ($this->deadlineReached($options)) break;
+            if ($i % 500 === 0 && isset($options['heartbeat']) && is_callable($options['heartbeat'])) $options['heartbeat']();
             $parsed = $this->parse($lines[$i]); $event = $this->classify($parsed, $lines[$i]);
             if (!$event) continue;
             if (DB::first('SELECT id FROM log_events WHERE log_path=? AND line_number=? AND raw_line=?', [$path, $i+1, $lines[$i]])) continue;
@@ -33,6 +39,8 @@ class LogAnalyzerService
         }
         return $count;
     }
+    private function deadlineReached(array $options): bool { return !empty($options['deadline_at']) && time() >= (int)$options['deadline_at']; }
+    private function logMatchesSiteScope(string $log, array $sitePaths): bool { if (!$sitePaths) return true; foreach ($sitePaths as $path) { $site = basename((string)$path); if ($site !== '' && str_contains($log, $site)) return true; } return false; }
     private function parse(string $line): array
     {
         $out = ['ip'=>null,'method'=>null,'uri'=>null,'status'=>null,'ua'=>null,'referer'=>null,'timestamp'=>null];
