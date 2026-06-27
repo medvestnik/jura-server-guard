@@ -6,6 +6,8 @@ use App\Modules\LogAnalyzer\LogAnalyzerService;
 use App\Modules\Rules\RuleRepository;
 use App\Support\DB;
 use App\Support\ScanLock;
+use App\Modules\Scanner\SignatureEngine;
+use App\Modules\Scanner\CmsDetector;
 use FilesystemIterator;
 use RecursiveCallbackFilterIterator;
 use RecursiveDirectoryIterator;
@@ -56,12 +58,16 @@ class ScannerService
                 DB::statement('UPDATE sites SET last_scan_at=?, updated_at=? WHERE id=?', [now(), now(), $site['id']]);
                 if ($this->limitReached) break;
             }
-            if (!($options['skip_logs'] ?? false) && !$this->deadlineReached($options) && !$this->limitReached) {
+            if ($this->shouldRunLogAnalysis($options) && !$this->deadlineReached($options) && !$this->limitReached) {
                 $this->updateRunProgress($runId, $files, $findings, null, null, 'Running log analysis', true);
                 $this->progress($options, 'Running log analysis');
                 (new LogAnalyzerService())->analyze(['deadline_at'=>$deadlineAt, 'site_paths'=>array_column($sites, 'path'), 'heartbeat'=>fn() => $this->updateRunProgress($runId, $files, $findings, null, null, 'Running log analysis')]);
             } elseif ($this->deadlineReached($options)) {
                 $this->limitReached = true;
+            } else {
+                $msg = $this->logSkipMessage($options);
+                $this->updateRunProgress($runId, $files, $findings, null, null, $msg, true);
+                $this->progress($options, $msg);
             }
             $this->updateRunProgress($runId, $files, $findings, null, null, 'Finalizing scan', true);
             $this->progress($options, 'Finalizing scan');
@@ -84,8 +90,9 @@ class ScannerService
         $maxFiles = (int)($options['max_files'] ?? config('guard.max_files_per_site'));
         $maxSeconds = (int)($options['max_seconds'] ?? config('guard.max_scan_seconds_per_site'));
         $dryRun = (bool)($options['dry_run'] ?? false);
-        $this->progress($options, "Scanning site {$site['name']} ({$site['path']})");
-        $this->updateRunProgress($runId, $baseFiles, $baseFindings, $site['name'] ?? null, $site['path'] ?? null, "Scanning site {$site['name']}", true);
+        $this->detectCmsForSite($site);
+        $this->progress($options, "Scanning files for site {$site['name']} ({$site['path']})");
+        $this->updateRunProgress($runId, $baseFiles, $baseFindings, $site['name'] ?? null, $site['path'] ?? null, "Scanning files", true);
         $it = new RecursiveIteratorIterator($this->filteredIterator($site['path'], $options));
         foreach ($it as $file) {
             if ($maxFiles > 0 && $count >= $maxFiles) { $this->limitReached = true; $this->progress($options, "Max files reached for {$site['name']}: $maxFiles"); break; }
@@ -251,6 +258,14 @@ class ScannerService
         $loaderEvidence = $this->selfReadingPackedLoaderEvidence($content);
         $allowed = $explicitlyAllowed || ($this->knownFalsePositivePath($path) && !$loaderEvidence);
         $logIds = $this->relatedLogEventIds($path);
+
+        foreach ((new SignatureEngine())->enabledSignatures() as $sig) {
+            $match = (new SignatureEngine())->match($sig, $path, $relative, $m, $content, $site['path'] ?? '');
+            if ($match) {
+                $s = $match['signature'];
+                $out[] = ['risk'=>$s['risk'] ?? 'high','type'=>$s['type'] ?? 'signature','rule_key'=>'signature:'.($s['slug'] ?? $s['name']),'title'=>'Matched signature: '.($s['name'] ?? 'unknown'),'description'=>$match['risk_explanation'],'matched'=>$match['matched'],'log_ids'=>$logIds,'signature'=>$s];
+            }
+        }
         if ($this->isValidationPath($path) && ($isPhp || $this->isWebConfig($path))) {
             $risk = $allowed ? 'low' : ($this->fakeWellKnownPath($path) || $isPhp ? 'critical' : 'high');
             $out[] = ['risk'=>$risk,'type'=>'validation_path_malware','rule_key'=>'validation-path-executable','title'=>'Executable or config file under validation directory','description'=>($this->fakeWellKnownPath($path)?'Fake well-known directory without leading dot is suspicious. ':'').'Validation/ACME paths should not contain PHP loaders or dangerous handlers.','matched'=>[], 'log_ids'=>$logIds];
@@ -275,7 +290,7 @@ class ScannerService
             $out[] = ['risk'=>$risk, 'type'=>$badHits?'webshell':'suspicious_php', 'rule_key'=>'malware-indicators', 'title'=>$allowed?'Allowlisted suspicious file changed':'Suspicious PHP malware indicators', 'description'=>'Matched combined Jura AV Monitor rules.', 'matched'=>$matched, 'log_ids'=>$logIds];
         }
         if ($isPhp && is_writable($path) && $this->suspiciousLocation($path)) $out[] = ['risk'=>$allowed?'low':'medium','type'=>'writable_php','rule_key'=>'writable-risky-php','title'=>'Writable PHP in risky directory','description'=>'PHP file is writable inside upload/cache/temp-like path.','matched'=>[], 'log_ids'=>$logIds];
-        if ($change === 'changed' && $this->importantChange($relative)) $out[] = ['risk'=>$allowed?'low':($this->criticalChange($relative)?'high':'medium'),'type'=>'core_change','rule_key'=>'important-change','title'=>'Important website file changed','description'=>'Snapshot detected change in an important CMS/core file.','matched'=>[], 'log_ids'=>$logIds];
+        if ($change === 'changed' && $this->importantChange($relative)) $out[] = ['risk'=>$allowed?'low':'low','type'=>'cms_integrity','rule_key'=>'important-change','title'=>'CMS/core integrity changed (needs baseline)','description'=>'Core_change is grouped as an integrity warning and needs a trusted baseline before being treated as malware.','matched'=>[], 'log_ids'=>$logIds];
         return $out;
     }
 
@@ -417,6 +432,11 @@ class ScannerService
     private function upsertFinding(int $runId, int $siteId, string $path, array $m, array $f): void
     {
         $rules = json_encode(array_map(fn($r)=>array_filter(['name'=>$r['name']??'runtime','risk'=>$r['risk']??$f['risk'],'pattern'=>$r['pattern']??'','snippet'=>$r['snippet']??null,'why'=>$r['why']??null,'indicators'=>$r['indicators']??null], fn($v)=>$v !== null), $f['matched']), JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+        $sig = $f['signature'] ?? null;
+        $sigId = isset($sig['id']) && $sig['id'] !== '' ? (int)$sig['id'] : null;
+        $sigName = $sig['name'] ?? null;
+        $sigSource = $sig['source'] ?? null;
+        $matchDetails = json_encode(['signature'=>$sigName,'signature_id'=>$sigId,'source'=>$sigSource,'matched'=>$f['matched'] ?? [],'risk_explanation'=>$f['description'] ?? null], JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
         $pathHash = hash('sha256', $path);
         $fingerprint = hash('sha256', $path.'|'.$f['type'].'|'.($f['rule_key'] ?? '').'|'.($m['sha256'] ?? ''));
         $findingHash = hash('sha256', $path.'|'.$f['type'].'|'.($f['rule_key'] ?? '').'|'.$fingerprint);
@@ -424,8 +444,31 @@ class ScannerService
         if ($ignored && ($ignored['sha256'] ?? null) === ($m['sha256'] ?? null)) return;
         $row = DB::first("SELECT id,status FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status NOT IN ('ignored','quarantined')", [$findingHash,$pathHash,$path]);
         $logIds = json_encode($f['log_ids'] ?? [], JSON_UNESCAPED_SLASHES);
-        if ($row) DB::statement('UPDATE findings SET scan_run_id=?,site_id=?,path_hash=?,finding_hash=?,risk=?,rule_key=?,title=?,description=?,matched_rules=?,related_log_event_ids=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,updated_at=? WHERE id=?', [$runId,$siteId,$pathHash,$findingHash,$f['risk'],$f['rule_key'] ?? null,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),$row['id']]);
-        else DB::insert('INSERT INTO findings (scan_run_id,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$runId,$siteId,$path,$pathHash,$findingHash,$f['risk'],'new',$f['type'],$f['rule_key'] ?? null,$fingerprint,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),now(),now()]);
+        if ($row) DB::statement('UPDATE findings SET site_id=?,path_hash=?,finding_hash=?,risk=?,rule_key=?,title=?,description=?,matched_rules=?,related_log_event_ids=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,last_seen_scan_id=?,last_matched_signature_id=?,matched_signature_name=?,matched_signature_source=?,signature_match_details=?,updated_at=? WHERE id=?', [$siteId,$pathHash,$findingHash,$f['risk'],$f['rule_key'] ?? null,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),$runId,$sigId,$sigName,$sigSource,$matchDetails,now(),$row['id']]);
+        else DB::insert('INSERT INTO findings (scan_run_id,first_seen_scan_id,last_seen_scan_id,last_matched_signature_id,matched_signature_name,matched_signature_source,signature_match_details,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$runId,$runId,$runId,$sigId,$sigName,$sigSource,$matchDetails,$siteId,$path,$pathHash,$findingHash,$f['risk'],'new',$f['type'],$f['rule_key'] ?? null,$fingerprint,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),now(),now()]);
+    }
+
+
+    private function shouldRunLogAnalysis(array $options): bool
+    {
+        if (!empty($options['skip_logs'])) return false;
+        if (!empty($options['include_logs'])) return true;
+        if ($this->profile($options) === 'deep') return true;
+        if ($this->profile($options) === 'fast' || $this->scanMode($options) === 'changed_only') return false;
+        return true;
+    }
+
+    private function logSkipMessage(array $options): string
+    {
+        if ($this->profile($options) === 'fast') return 'Skipping log analysis for fast scan';
+        if ($this->scanMode($options) === 'changed_only') return 'Skipping log analysis for changed-only scan';
+        return 'Skipping log analysis';
+    }
+
+    private function detectCmsForSite(array $site): void
+    {
+        $cms = (new CmsDetector())->detect($site['path']);
+        DB::statement('UPDATE sites SET cms_type=?, cms_version=?, cms_detected_at=?, cms_confidence=?, cms_admin_path=?, cms_notes=?, updated_at=? WHERE id=?', [$cms['type'],$cms['version'],now(),$cms['confidence'],$cms['admin_path'],$cms['notes'],now(),$site['id']]);
     }
 
     private function progress(array $options, string $message): void

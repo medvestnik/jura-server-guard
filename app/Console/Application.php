@@ -19,7 +19,7 @@ class Application
                 'serve' => $this->serve($argv), 'migrate' => $this->migrate(), 'guard:seed-rules' => $this->seedRules(), 'guard:create-admin' => $this->createAdmin($argv[2] ?? env_value('JURA_ADMIN_EMAIL','admin@example.com'), $argv[3] ?? bin2hex(random_bytes(12))),
                 'guard:scan' => $this->scan('full', null, $argv), 'guard:scan-user' => $this->scan('user', $argv[2] ?? null, $argv), 'guard:scan-site' => $this->scan('site', $argv[2] ?? null, $argv), 'guard:logs' => $this->logs($argv),
                 'guard:backup-detect' => $this->backupDetect(), 'guard:backups:list-users' => $this->backupUsers(), 'guard:backups:list' => $this->backupList($argv), 'guard:backups:find-file' => $this->backupFind($argv), 'guard:backups:preview' => $this->backupPreview($argv), 'guard:backups:diff' => $this->backupDiff($argv), 'guard:backups:restore-file' => $this->backupRestore($argv),
-                'guard:scan-active' => $this->scanActive(), 'guard:scan-unlock' => $this->scanUnlock($argv), 'guard:cleanup-running-scans' => $this->cleanupRunningScans($argv), 'guard:prune' => $this->prune($argv), 'guard:db-stats' => $this->dbStats(), 'guard:optimize-db' => $this->optimizeDb(),
+                'guard:signature-list' => $this->signatureList(), 'guard:signature-test' => $this->signatureTest((int)($argv[2] ?? 0), $argv[3] ?? ''), 'guard:signature-suggest' => $this->signatureSuggest((int)($argv[2] ?? 0)), 'guard:signature-enable' => $this->signatureToggle((int)($argv[2] ?? 0), true), 'guard:signature-disable' => $this->signatureToggle((int)($argv[2] ?? 0), false), 'guard:scan-active' => $this->scanActive(), 'guard:scan-unlock' => $this->scanUnlock($argv), 'guard:cleanup-running-scans' => $this->cleanupRunningScans($argv), 'guard:prune' => $this->prune($argv), 'guard:db-stats' => $this->dbStats(), 'guard:optimize-db' => $this->optimizeDb(),
                 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:status' => $this->status(), 'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
             };
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
@@ -66,6 +66,13 @@ class Application
         if ($driver === 'mysql') {
             try { DB::pdo()->exec('ALTER TABLE log_events MODIFY uri LONGTEXT NULL, MODIFY raw_line LONGTEXT NOT NULL'); } catch (\Throwable) {}
         }
+        foreach (['cms_version','cms_detected_at','cms_admin_path','cms_notes'] as $col) $this->ensureColumn('sites', $col, $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+        $this->ensureColumn('sites', 'cms_confidence', $driver === 'mysql' ? 'INT NULL' : 'INTEGER NULL');
+        foreach (['first_seen_scan_id','last_seen_scan_id','last_matched_signature_id'] as $col) $this->ensureColumn('findings', $col, $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
+        foreach (['matched_signature_name','matched_signature_source','signature_match_details'] as $col) $this->ensureColumn('findings', $col, $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+        $this->ensureSignatureTables($driver);
+        $this->seedBuiltinSignatures();
+
         $this->ensureColumn('scan_runs', 'profile', $driver === 'mysql' ? "VARCHAR(32) NOT NULL DEFAULT 'fast'" : "TEXT NOT NULL DEFAULT 'fast'");
         $this->ensureColumn('scan_runs', 'files_scanned', $driver === 'mysql' ? 'BIGINT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0');
         $this->ensureColumn('scan_runs', 'skipped_media', $driver === 'mysql' ? 'BIGINT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0');
@@ -139,6 +146,65 @@ class Application
         }
     }
 
+
+    private function ensureSignatureTables(string $driver): void
+    {
+        if ($driver === 'mysql') {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS malware_signatures (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, slug VARCHAR(255) NOT NULL UNIQUE, description TEXT NULL, risk VARCHAR(32) NOT NULL, type VARCHAR(64) NOT NULL, pattern_type VARCHAR(32) NOT NULL, pattern_json LONGTEXT NOT NULL, target_extensions LONGTEXT NULL, target_paths LONGTEXT NULL, exclude_paths LONGTEXT NULL, required_hits INT NULL, enabled TINYINT(1) NOT NULL DEFAULT 1, source VARCHAR(32) NOT NULL DEFAULT 'manual', source_finding_id BIGINT NULL, source_file_sha256 CHAR(64) NULL, confidence DECIMAL(5,2) NULL, false_positive_notes TEXT NULL, created_at DATETIME NULL, updated_at DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS signature_suggestions (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, finding_id BIGINT NULL, source_file_path TEXT NULL, source_file_sha256 CHAR(64) NULL, ai_provider VARCHAR(64) NULL, model VARCHAR(128) NULL, status VARCHAR(32) NOT NULL DEFAULT 'draft', suggested_name VARCHAR(255) NULL, suggested_risk VARCHAR(32) NULL, suggested_type VARCHAR(64) NULL, suggested_pattern_type VARCHAR(32) NULL, suggested_pattern_json LONGTEXT NULL, explanation TEXT NULL, test_result_json LONGTEXT NULL, created_at DATETIME NULL, updated_at DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS site_path_whitelist (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, site_id BIGINT NULL, path TEXT NOT NULL, path_type VARCHAR(32) NOT NULL DEFAULT 'file', reason TEXT NULL, approved_by BIGINT NULL, approved_at DATETIME NULL, expires_at DATETIME NULL, created_at DATETIME NULL, updated_at DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        } else {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS malware_signatures (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, description TEXT NULL, risk TEXT NOT NULL, type TEXT NOT NULL, pattern_type TEXT NOT NULL, pattern_json TEXT NOT NULL, target_extensions TEXT NULL, target_paths TEXT NULL, exclude_paths TEXT NULL, required_hits INTEGER NULL, enabled INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT 'manual', source_finding_id INTEGER NULL, source_file_sha256 TEXT NULL, confidence REAL NULL, false_positive_notes TEXT NULL, created_at TEXT, updated_at TEXT)");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS signature_suggestions (id INTEGER PRIMARY KEY AUTOINCREMENT, finding_id INTEGER NULL, source_file_path TEXT NULL, source_file_sha256 TEXT NULL, ai_provider TEXT NULL, model TEXT NULL, status TEXT NOT NULL DEFAULT 'draft', suggested_name TEXT NULL, suggested_risk TEXT NULL, suggested_type TEXT NULL, suggested_pattern_type TEXT NULL, suggested_pattern_json TEXT NULL, explanation TEXT NULL, test_result_json TEXT NULL, created_at TEXT, updated_at TEXT)");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS site_path_whitelist (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NULL, path TEXT NOT NULL, path_type TEXT NOT NULL DEFAULT 'file', reason TEXT NULL, approved_by INTEGER NULL, approved_at TEXT NULL, expires_at TEXT NULL, created_at TEXT, updated_at TEXT)");
+        }
+    }
+
+
+    private function seedBuiltinSignatures(): void
+    {
+        foreach ((new \App\Modules\Scanner\SignatureEngine())->builtinSignatures() as $sig) {
+            if (DB::first('SELECT id FROM malware_signatures WHERE slug=?', [$sig['slug']])) continue;
+            DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,enabled,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?,?)', [$sig['name'],$sig['slug'],$sig['description'],$sig['risk'],$sig['type'],$sig['pattern_type'],$sig['pattern_json'],$sig['target_extensions'],'builtin',now(),now()]);
+        }
+    }
+
+    private function signatureList(): int
+    {
+        foreach (DB::select('SELECT id,name,risk,type,pattern_type,source,enabled FROM malware_signatures ORDER BY id') as $r) echo implode("\t", $r) . "\n";
+        return 0;
+    }
+
+    private function signatureToggle(int $id, bool $enabled): int
+    {
+        DB::statement('UPDATE malware_signatures SET enabled=?,updated_at=? WHERE id=?', [$enabled ? 1 : 0, now(), $id]);
+        echo ($enabled ? 'Enabled' : 'Disabled') . " signature #$id\n";
+        return 0;
+    }
+
+    private function signatureTest(int $id, string $file): int
+    {
+        $s = DB::first('SELECT * FROM malware_signatures WHERE id=?', [$id]);
+        if (!$s || !is_file($file)) throw new \InvalidArgumentException('Signature or file not found.');
+        $m = ['extension' => strtolower(pathinfo($file, PATHINFO_EXTENSION)), 'sha256' => hash_file('sha256', $file)];
+        $hit = (new \App\Modules\Scanner\SignatureEngine())->match($s, $file, basename($file), $m, file_get_contents($file));
+        echo json_encode(['matched' => (bool)$hit, 'details' => $hit], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        return $hit ? 0 : 1;
+    }
+
+    private function signatureSuggest(int $findingId): int
+    {
+        $f = DB::first('SELECT * FROM findings WHERE id=?', [$findingId]);
+        if (!$f) throw new \InvalidArgumentException('Finding not found.');
+        if (!filter_var(env_value('JURA_AI_SIGNATURES_ENABLED', 'false'), FILTER_VALIDATE_BOOLEAN)) {
+            $id = DB::insert('INSERT INTO signature_suggestions (finding_id,source_file_path,source_file_sha256,ai_provider,model,status,suggested_name,suggested_risk,suggested_type,suggested_pattern_type,suggested_pattern_json,explanation,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$findingId,$f['path'],$f['sha256'],env_value('JURA_AI_PROVIDER','openai'),env_value('JURA_AI_MODEL',''),'draft','Draft from finding '.$findingId,$f['risk'],$f['type'],'combo','{}','AI signatures are disabled; draft placeholder created for manual review.',now(),now()]);
+            echo "Draft signature suggestion #$id created; not enabled.\n";
+            return 0;
+        }
+        echo "AI provider call is not configured in this build; no API key stored.\n";
+        return 1;
+    }
+
     private function ensureRestoreActionsTable(string $driver): void
     {
         if ($driver === 'mysql') DB::pdo()->exec("CREATE TABLE IF NOT EXISTS restore_actions (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, admin_user_id BIGINT UNSIGNED NULL, original_path VARCHAR(2048) NOT NULL, backup_provider VARCHAR(64) NOT NULL, backup_user VARCHAR(255) NULL, backup_date VARCHAR(64) NULL, backup_source_archive TEXT NULL, previous_sha256 CHAR(64) NULL, restored_sha256 CHAR(64) NULL, previous_size BIGINT NULL, restored_size BIGINT NULL, quarantine_path TEXT NULL, created_at DATETIME NULL, status VARCHAR(32) NOT NULL DEFAULT 'pending', error_message TEXT NULL, INDEX restore_actions_path_idx(original_path(191))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
@@ -183,8 +249,8 @@ class Application
     }
     private function logs(array $argv): int { $o=$this->scanOptions($argv); $lock=new ScanLock(); if(!$o['no_lock']) $lock->acquire('guard:logs',$o['force']); try { $n=(new LogAnalyzerService())->analyze(); echo "Stored suspicious log events: $n\n"; return 0; } finally { if(!$o['no_lock']) $lock->release(); } }
     private function scanOptions(array $argv): array {
-        $this->validateOptions($argv, ['--profile','--force','--no-lock','--include-old','--include-storage','--include-backups','--dry-run','--verbose','--max-files','--max-seconds','--diff','--changed-only','--full-rescan','--skip-logs','--lock-label']);
-        return ['profile'=>$this->optionString($argv,'--profile') ?? (string)config('guard.scan_profile','fast'), 'force'=>in_array('--force',$argv,true), 'no_lock'=>in_array('--no-lock',$argv,true), 'include_old'=>in_array('--include-old',$argv,true), 'include_storage'=>in_array('--include-storage',$argv,true), 'include_backups'=>in_array('--include-backups',$argv,true), 'dry_run'=>in_array('--dry-run',$argv,true), 'verbose'=>in_array('--verbose',$argv,true), 'max_files'=>$this->optionInt($argv,'--max-files'), 'max_seconds'=>$this->optionInt($argv,'--max-seconds'), 'diff'=>in_array('--diff',$argv,true), 'changed_only'=>in_array('--changed-only',$argv,true), 'full_rescan'=>in_array('--full-rescan',$argv,true), 'skip_logs'=>in_array('--skip-logs',$argv,true)]; }
+        $this->validateOptions($argv, ['--profile','--force','--no-lock','--include-old','--include-storage','--include-backups','--dry-run','--verbose','--max-files','--max-seconds','--diff','--changed-only','--full-rescan','--skip-logs','--include-logs','--lock-label']);
+        return ['profile'=>$this->optionString($argv,'--profile') ?? (string)config('guard.scan_profile','fast'), 'force'=>in_array('--force',$argv,true), 'no_lock'=>in_array('--no-lock',$argv,true), 'include_old'=>in_array('--include-old',$argv,true), 'include_storage'=>in_array('--include-storage',$argv,true), 'include_backups'=>in_array('--include-backups',$argv,true), 'dry_run'=>in_array('--dry-run',$argv,true), 'verbose'=>in_array('--verbose',$argv,true), 'max_files'=>$this->optionInt($argv,'--max-files'), 'max_seconds'=>$this->optionInt($argv,'--max-seconds'), 'diff'=>in_array('--diff',$argv,true), 'changed_only'=>in_array('--changed-only',$argv,true), 'full_rescan'=>in_array('--full-rescan',$argv,true), 'skip_logs'=>in_array('--skip-logs',$argv,true), 'include_logs'=>in_array('--include-logs',$argv,true)]; }
     private function validateOptions(array $argv, array $allowed): void { foreach (array_slice($argv, 2) as $arg) { if (!str_starts_with($arg, '--')) continue; $name = explode('=', $arg, 2)[0]; if (!in_array($name, $allowed, true)) throw new \InvalidArgumentException("Unsupported option: $name"); } }
     private function optionInt(array $argv, string $name): ?int { foreach($argv as $a) if(str_starts_with($a,$name.'=')) return (int)substr($a,strlen($name)+1); return null; }
     private function optionString(array $argv, string $name): ?string { foreach($argv as $a) if(str_starts_with($a,$name.'=')) return substr($a,strlen($name)+1); return null; }
