@@ -1,4 +1,5 @@
 <?php
+function utc_timestamp(string $timestamp): int { return strtotime($timestamp . ' UTC') ?: strtotime($timestamp) ?: time(); }
 require dirname(__DIR__).'/vendor/autoload.php';
 use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Backups\IspmanagerBackupService;
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
@@ -17,8 +18,8 @@ function scan_active_context(): array {
     $lock = (new ScanLock())->read();
     $pid = (int)($run['pid'] ?? $lock['pid'] ?? 0);
     $pidAlive = $pid > 0 && scan_pid_alive($pid);
-    $heartbeatAge = !empty($run['last_heartbeat_at']) ? max(0, time() - strtotime($run['last_heartbeat_at'])) : null;
-    $lockAge = !empty($lock['started_at']) ? max(0, time() - strtotime($lock['started_at'])) : null;
+    $heartbeatAge = !empty($run['last_heartbeat_at']) ? max(0, time() - utc_timestamp($run['last_heartbeat_at'])) : null;
+    $lockAge = !empty($lock['started_at']) ? max(0, time() - utc_timestamp($lock['started_at'])) : null;
     $stale = (bool)$run && ((!$pidAlive && $pid > 0) || ($heartbeatAge !== null && $heartbeatAge > 90));
     if (!$run && $lock && !$pidAlive && ($lockAge === null || $lockAge > 90)) $stale = true;
     $total = isset($run['total_files_estimated']) ? (int)$run['total_files_estimated'] : 0;

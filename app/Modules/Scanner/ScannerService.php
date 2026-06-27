@@ -5,6 +5,7 @@ use App\Modules\Inventory\InventoryService;
 use App\Modules\LogAnalyzer\LogAnalyzerService;
 use App\Modules\Rules\RuleRepository;
 use App\Support\DB;
+use App\Support\ScanLock;
 use FilesystemIterator;
 use RecursiveCallbackFilterIterator;
 use RecursiveDirectoryIterator;
@@ -29,11 +30,14 @@ class ScannerService
         $scanMode = $this->scanMode($options);
         $previousRunId = $this->previousRunId($scopeType, $scopeValue);
         $pid = getmypid() ?: null;
+        $deadlineAt = $this->deadlineAt($options);
+        $options['deadline_at'] = $deadlineAt;
         $totalEstimated = $this->estimateTotalFiles($scopeType, $scopeValue, $options);
         $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,pid,total_files_estimated,last_heartbeat_at,progress_message,scan_mode,previous_scan_id,files_scanned,skipped_media,skipped_directories,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$profile,$pid,$totalEstimated,now(),'Starting scan',$scanMode,$previousRunId,now(),now()]);
         $files = 0; $findings = 0;
         $stop = function (string $signal) use (&$runId, &$files, &$findings): void {
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', ['stopped', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $signal, now(), $signal, now(), $runId]);
+            (new ScanLock())->release();
             exit(130);
         };
         if (function_exists('pcntl_async_signals')) {
@@ -45,16 +49,28 @@ class ScannerService
             $GLOBALS['__guard_scan_run_id'] = $runId;
             $inv = new InventoryService();
             $sites = match ($scopeType) { 'user' => $inv->refresh($scopeValue, null, $options), 'site' => $inv->refresh(null, $scopeValue, $options), default => $inv->refresh(null, null, $options) };
-            $this->progress($options, sprintf('Scan #%d [%s]: %d site(s) selected for %s%s', $runId, $this->profile($options), count($sites), $scopeType, $scopeValue ? ': '.$scopeValue : '')); 
+            $this->progress($options, sprintf('Scan #%d [%s/%s]: %d site(s) selected for %s%s', $runId, $this->profile($options), $scanMode, count($sites), $scopeType, $scopeValue ? ': '.$scopeValue : ''));
             foreach ($sites as $site) {
+                if ($this->deadlineReached($options)) { $this->limitReached = true; break; }
                 [$f, $c] = $this->scanSite($site, $runId, $options, $files, $findings); $files += $f; $findings += $c;
                 DB::statement('UPDATE sites SET last_scan_at=?, updated_at=? WHERE id=?', [now(), now(), $site['id']]);
+                if ($this->limitReached) break;
             }
-            if (!($options['skip_logs'] ?? false)) (new LogAnalyzerService())->analyze();
+            if (!($options['skip_logs'] ?? false) && !$this->deadlineReached($options) && !$this->limitReached) {
+                $this->updateRunProgress($runId, $files, $findings, null, null, 'Running log analysis', true);
+                $this->progress($options, 'Running log analysis');
+                (new LogAnalyzerService())->analyze(['deadline_at'=>$deadlineAt, 'site_paths'=>array_column($sites, 'path'), 'heartbeat'=>fn() => $this->updateRunProgress($runId, $files, $findings, null, null, 'Running log analysis')]);
+            } elseif ($this->deadlineReached($options)) {
+                $this->limitReached = true;
+            }
+            $this->updateRunProgress($runId, $files, $findings, null, null, 'Finalizing scan', true);
+            $this->progress($options, 'Finalizing scan');
             $status = $this->limitReached ? 'completed_with_limit' : 'completed';
             $error = $this->limitReached ? 'Stopped by max files or max seconds; scan may be incomplete.' : null;
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, last_heartbeat_at=?, progress_message=?, files_seen_total=?, files_new=?, files_modified=?, files_deleted=?, files_changed_total=?, files_analyzed=?, files_skipped_unchanged=?, diff_summary=?, updated_at=? WHERE id=?', [$status, now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $error, now(), ucfirst(str_replace('_',' ', $status)), $this->diffStats['files_seen_total'], $this->diffStats['files_new'], $this->diffStats['files_modified'], $this->diffStats['files_deleted'], $this->diffStats['files_changed_total'], $this->diffStats['files_analyzed'], $this->diffStats['files_skipped_unchanged'], json_encode($this->diffStats, JSON_UNESCAPED_SLASHES), now(), $runId]);
-            $this->progress($options, "Scan #$runId $status: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories}");
+            $msg = $this->limitReached ? 'Scan stopped by max seconds or max files' : 'Scan completed';
+            $this->progress($options, $msg);
+            $this->progress($options, "Scan #$runId $status: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories} files_seen_total={$this->diffStats['files_seen_total']} files_new={$this->diffStats['files_new']} files_modified={$this->diffStats['files_modified']} files_deleted={$this->diffStats['files_deleted']} files_analyzed={$this->diffStats['files_analyzed']} files_skipped_unchanged={$this->diffStats['files_skipped_unchanged']} scan_mode=$scanMode");
             return $runId;
         } catch (Throwable $e) {
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $e->getMessage(), now(), 'Scan failed', now(), $runId]);
@@ -73,7 +89,7 @@ class ScannerService
         $it = new RecursiveIteratorIterator($this->filteredIterator($site['path'], $options));
         foreach ($it as $file) {
             if ($maxFiles > 0 && $count >= $maxFiles) { $this->limitReached = true; $this->progress($options, "Max files reached for {$site['name']}: $maxFiles"); break; }
-            if ($maxSeconds > 0 && time() - $start >= $maxSeconds) { $this->limitReached = true; $this->progress($options, "Max seconds reached for {$site['name']}: $maxSeconds"); break; }
+            if ($this->deadlineReached($options)) { $this->limitReached = true; $this->progress($options, "Max seconds reached for scan run while scanning {$site['name']}: $maxSeconds"); break; }
             if (!$file->isFile() || $file->isLink()) continue;
             $path = $file->getPathname();
             if (!$this->shouldScanFile($path, $site['path'], $options)) { $this->skippedMedia++; $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $path, 'Skipping non-eligible/media file'); continue; }
@@ -84,7 +100,7 @@ class ScannerService
             $meta = $this->meta($path, $previous, $relative, $options);
             $change = $dryRun ? 'dry-run' : $this->snapshot($site['id'], $path, $pathHash, $relative, $meta, $previous);
             $this->accountDiff($change);
-            $analyze = $mode === 'full' || $change !== 'same' || $this->heavyAnalysisCandidate($path, $site['path'], $relative, $meta);
+            $analyze = $mode === 'full' || $change !== 'same' || ($mode !== 'changed_only' && $this->heavyAnalysisCandidate($path, $site['path'], $relative, $meta)) || $this->mustAnalyzeChangedOnly($path, $site['path'], $relative);
             if (!$analyze) { $this->diffStats['files_skipped_unchanged']++; continue; }
             $this->diffStats['files_analyzed']++;
             foreach ($this->detect($site, $path, $relative, $meta, $change) as $finding) {
@@ -95,8 +111,8 @@ class ScannerService
             if ($count % 1000 === 0) $this->progress($options, "Progress {$site['name']}: files=$count findings=$findings elapsed=".(time()-$start).'s');
         }
         if (!$dryRun) foreach (DB::select('SELECT id,path FROM file_snapshots WHERE site_id=? AND is_missing=0', [$site['id']]) as $snap) if (!isset($seen[$snap['path']]) && !file_exists($snap['path'])) { $this->diffStats['files_deleted']++; $this->diffStats['files_changed_total']++; DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,last_changed_scan_id=?,updated_at=? WHERE id=?', [now(),$runId,now(),$snap['id']]); }
-        $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $site['path'] ?? null, "Finished {$site['name']}", true);
-        $this->progress($options, "Finished {$site['name']}: files=$count findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories} elapsed=".(time()-$start).'s');
+        $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $site['path'] ?? null, "Finished file scan for site {$site['name']}", true);
+        $this->progress($options, "Finished file scan for site {$site['name']}: files=$count findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories} elapsed=".(time()-$start).'s');
         return [$count, $findings];
     }
 
@@ -117,8 +133,10 @@ class ScannerService
             $sites = match ($scopeType) { 'user' => $inv->refresh($scopeValue, null, $options), 'site' => $inv->refresh(null, $scopeValue, $options), default => $inv->refresh(null, null, $options) };
             $total = 0;
             foreach ($sites as $site) {
+                if ($this->deadlineReached($options)) { $this->limitReached = true; break; }
                 $it = new RecursiveIteratorIterator($this->filteredIterator($site['path'], $options));
                 foreach ($it as $file) {
+                    if ($this->deadlineReached($options)) { $this->limitReached = true; break; }
                     if ($file instanceof SplFileInfo && $file->isFile() && !$file->isLink() && $this->shouldScanFile($file->getPathname(), $site['path'], $options)) $total++;
                 }
             }
@@ -194,12 +212,14 @@ class ScannerService
     private function shouldHash(string $path, string $rel, int $size, ?array $previous, ?string $mtime, string $permissions, string $owner): bool
     {
         if ($size > ((int)config('guard.max_file_size_for_hash_mb') * 1024 * 1024)) return false;
+        if (!$previous) return true;
+        $metadataChanged = (int)$previous['size'] !== $size || (string)$previous['mtime'] !== (string)$mtime || (string)$previous['permissions'] !== $permissions || (string)$previous['owner'] !== $owner;
+        if (!$metadataChanged) return false;
         if (config('guard.hash_all_files')) return true;
         $isPhp = (bool)preg_match('/\.(php|phtml|phar|inc)$/i', $path);
         if ($isPhp && config('guard.hash_php_files')) return true;
         if (config('guard.hash_critical_files') && $this->importantChange($rel)) return true;
-        if (!$previous) return true;
-        return (int)$previous['size'] !== $size || (string)$previous['mtime'] !== (string)$mtime || (string)$previous['permissions'] !== $permissions || (string)$previous['owner'] !== $owner;
+        return true;
     }
 
     private function snapshot(int $siteId, string $path, string $pathHash, string $relative, array $m, ?array $row): string
@@ -212,6 +232,9 @@ class ScannerService
         return $changed ? 'changed' : 'same';
     }
 
+    private function deadlineAt(array $options): ?int { $max = (int)($options['max_seconds'] ?? 0); return $max > 0 ? time() + $max : null; }
+    private function deadlineReached(array $options): bool { return !empty($options['deadline_at']) && time() >= (int)$options['deadline_at']; }
+    private function mustAnalyzeChangedOnly(string $path, string $root, string $rel): bool { return $this->isValidationPath($path) || $this->isRootCriticalFile($rel) || $this->isWebConfig($path) || ($this->isPhpLike($path) && preg_match('#/(uploads|cache|tmp|media|images|storage)/#i',$path)) || $this->structuralSuspiciousPath($path) || (bool)DB::first("SELECT id FROM findings WHERE path_hash=? AND status NOT IN ('ignored','quarantined') LIMIT 1", [hash('sha256',$path)]); }
     private function metadataUnchanged(array $row, array $m): bool { foreach (['size','mtime','ctime','mode','uid','gid'] as $k) if ((string)($row[$k] ?? '') !== (string)($m[$k] ?? '')) return false; if (!empty($row['inode']) && !empty($m['inode']) && (string)$row['inode'] !== (string)$m['inode']) return false; return true; }
     private function scanMode(array $options): string { $profile=$this->profile($options); if (!empty($options['full_rescan'])) return 'full'; if (!empty($options['changed_only'])) return 'changed_only'; if (!empty($options['diff'])) return 'differential'; return $profile === 'deep' ? 'full' : 'differential'; }
     private function previousRunId(string $scopeType, ?string $scopeValue): ?int { $sql = $scopeValue === null ? "SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND scope_type=? AND scope_value IS NULL ORDER BY id DESC LIMIT 1" : "SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND scope_type=? AND scope_value=? ORDER BY id DESC LIMIT 1"; $params = $scopeValue === null ? [$scopeType] : [$scopeType,$scopeValue]; $r=DB::first($sql, $params); return $r ? (int)$r['id'] : null; }
