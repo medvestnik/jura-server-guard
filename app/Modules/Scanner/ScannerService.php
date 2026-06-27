@@ -90,7 +90,8 @@ class ScannerService
         $maxFiles = (int)($options['max_files'] ?? config('guard.max_files_per_site'));
         $maxSeconds = (int)($options['max_seconds'] ?? config('guard.max_scan_seconds_per_site'));
         $dryRun = (bool)($options['dry_run'] ?? false);
-        $this->detectCmsForSite($site);
+        $cms = $this->detectCmsForSite($site);
+        $site = array_merge($site, ['cms_type'=>$cms['type'], 'cms_version'=>$cms['version'], 'cms_confidence'=>$cms['confidence']]);
         $this->progress($options, "Scanning files for site {$site['name']} ({$site['path']})");
         $this->updateRunProgress($runId, $baseFiles, $baseFindings, $site['name'] ?? null, $site['path'] ?? null, "Scanning files", true);
         $it = new RecursiveIteratorIterator($this->filteredIterator($site['path'], $options));
@@ -248,7 +249,7 @@ class ScannerService
     private function accountDiff(string $change): void { $this->diffStats['files_seen_total']++; if ($change==='new') { $this->diffStats['files_new']++; $this->diffStats['files_changed_total']++; } elseif ($change==='changed') { $this->diffStats['files_modified']++; $this->diffStats['files_changed_total']++; } }
     private function fileCategory(string $path, string $rel): string { if ($this->isPhpLike($path)) return 'php'; if ($this->isWebConfig($path)) return 'config'; if ($this->isOrdinaryMedia($path)) return 'media'; return strtolower(pathinfo($path, PATHINFO_EXTENSION) ?: 'other'); }
     private function heavyAnalysisCandidate(string $path, string $root, string $rel, array $m): bool { $base=basename($path); if ($this->isWebConfig($path) || preg_match('/^google.*\.html$/i',$base) || str_starts_with($base,'.')) return true; if ($this->suspiciousLocation($path) || $this->isValidationPath($path)) return true; if ($this->isPhpLike($path) && preg_match('#/(uploads|cache|tmp|media|images|storage)/#i',$path)) return true; if (preg_match('/\.(phar|phtml|shtml|cgi|pl|py|sh|asp|aspx)$/i',$path)) return true; if (DB::first("SELECT id FROM findings WHERE path_hash=? AND status NOT IN ('ignored','quarantined') LIMIT 1", [hash('sha256',$path)])) return true; return $this->structuralSuspiciousPath($path); }
-    private function structuralSuspiciousPath(string $path): bool { return (bool)preg_match('#/(404SBG|configCWE|FSS-NPY)(/|$)|\.txt404(/|$)|/(WHMCS|Joomla|Drupal|OpenCart|PrestaShop|env|accesshash|admin-env)(/|$)#i', $path); }
+    private function structuralSuspiciousPath(string $path): bool { return (bool)preg_match('#/(404SBG|configCWE|FSS-NPY)(/|$)|\.txt404(/|$)|/(WHMCS|Joomla|Drupal|OpenCart|PrestaShop|env|accesshash|admin-env)(/|$)|/(wp-admin|wp-content|wp-includes)(/|$)#i', $path); }
 
     private function detect(array $site, string $path, string $relative, array $m, string $change): array
     {
@@ -266,6 +267,7 @@ class ScannerService
                 $out[] = ['risk'=>$s['risk'] ?? 'high','type'=>$s['type'] ?? 'signature','rule_key'=>'signature:'.($s['slug'] ?? $s['name']),'title'=>'Matched signature: '.($s['name'] ?? 'unknown'),'description'=>$match['risk_explanation'],'matched'=>$match['matched'],'log_ids'=>$logIds,'signature'=>$s];
             }
         }
+        if ($dle = $this->dleStructuralFinding($site, $path, $relative, $content)) $out[] = $dle;
         if ($this->isValidationPath($path) && ($isPhp || $this->isWebConfig($path))) {
             $risk = $allowed ? 'low' : ($this->fakeWellKnownPath($path) || $isPhp ? 'critical' : 'high');
             $out[] = ['risk'=>$risk,'type'=>'validation_path_malware','rule_key'=>'validation-path-executable','title'=>'Executable or config file under validation directory','description'=>($this->fakeWellKnownPath($path)?'Fake well-known directory without leading dot is suspicious. ':'').'Validation/ACME paths should not contain PHP loaders or dangerous handlers.','matched'=>[], 'log_ids'=>$logIds];
@@ -294,6 +296,25 @@ class ScannerService
         return $out;
     }
 
+
+
+    private function dleStructuralFinding(array $site, string $path, string $relative, string $content): ?array
+    {
+        if (($site['cms_type'] ?? '') !== 'dle') return null;
+        $rel = str_replace('\\', '/', ltrim($relative, '/'));
+        $base = basename($rel);
+        $risk = 'high'; $reason = null;
+        if (preg_match('#^(wp-blog-header\.php|wp-load\.php|wp-login\.php|xmlrpc\.php)$#i', $rel) || preg_match('#^(wp-admin|wp-content|wp-includes)(/|$)#i', $rel)) $reason = 'Fake WordPress artefact present in DataLife Engine root';
+        elseif (preg_match('#^uploads/.+\.(php|phtml|phar|php[578]?|inc)$#i', $rel)) $reason = 'Executable PHP file inside DLE uploads';
+        elseif (preg_match('#/(engine/cache|engine/data|uploads|templates)/#i', '/'.$rel) && ($this->malwareLikeName($path) || $this->suspiciousContent($content))) $reason = 'Shell-like file under DLE writable/cache/data/template path';
+        elseif (str_starts_with($base, '.') && $this->isPhpLike($path)) $reason = 'Hidden PHP file inside DLE site';
+        elseif ($this->isWebConfig($path) && preg_match('/AddHandler|SetHandler|php_value|auto_prepend_file|AddType/i', $content)) $reason = 'Suspicious .htaccess/PHP handler directive in DLE site';
+        elseif (preg_match('#^(wordpress|wp|joomla|opencart|drupal|bitrix)/#i', $rel)) $reason = 'Nested fake/duplicate CMS directory inside DLE site';
+        elseif (preg_match('#^[^/]+\.php$#i', $rel) && !preg_match('#^(index|admin|cron|upgrade|api|engine)\.php$#i', $rel)) { $reason = 'Unexpected root PHP file in DLE site'; $risk = 'medium'; }
+        if (!$reason) return null;
+        if (preg_match('/eval\s*\(|base64_decode\s*\(|gz(inflate|uncompress)\s*\(|file_get_contents\s*\(\s*__FILE__/i', $content)) $risk = 'critical';
+        return ['risk'=>$risk,'type'=>'cms_structure','rule_key'=>'dle-structural-warning','title'=>'DataLife Engine structural warning','description'=>$reason,'matched'=>[['name'=>'dle-structure','risk'=>$risk,'pattern'=>$reason,'snippet'=>$rel]], 'log_ids'=>$this->relatedLogEventIds($path)];
+    }
 
     private function isSeoScannable(string $path): bool { return (bool)preg_match('/\.(php|html?|txt)$/i', $path); }
     private function seoDoorwayEvidence(string $path, string $relative, string $content, string $change): ?array
@@ -465,10 +486,11 @@ class ScannerService
         return 'Skipping log analysis';
     }
 
-    private function detectCmsForSite(array $site): void
+    private function detectCmsForSite(array $site): array
     {
         $cms = (new CmsDetector())->detect($site['path']);
         DB::statement('UPDATE sites SET cms_type=?, cms_version=?, cms_detected_at=?, cms_confidence=?, cms_admin_path=?, cms_notes=?, updated_at=? WHERE id=?', [$cms['type'],$cms['version'],now(),$cms['confidence'],$cms['admin_path'],$cms['notes'],now(),$site['id']]);
+        return $cms;
     }
 
     private function progress(array $options, string $message): void

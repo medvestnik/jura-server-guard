@@ -64,9 +64,10 @@ class InventoryService
     }
     private function detectCms(string $path): ?string
     {
-        if (is_file($path.'/wp-config.php')) return 'WordPress';
-        if (is_file($path.'/configuration.php')) return 'Joomla';
-        if (is_file($path.'/config.php') && is_file($path.'/admin/config.php')) return 'OpenCart';
+        if (is_file($path.'/wp-config.php')) return 'wordpress';
+        if (is_file($path.'/configuration.php')) return 'joomla';
+        if (is_file($path.'/engine/engine.php') || is_file($path.'/engine/init.php') || (is_dir($path.'/engine/data') && is_dir($path.'/templates'))) return 'dle';
+        if (is_file($path.'/config.php') && is_file($path.'/admin/config.php')) return 'opencart';
         return null;
     }
 }
