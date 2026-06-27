@@ -13,7 +13,7 @@ class InventoryService
             $path = rtrim(realpath($path) ?: $path, '/');
             if (!is_dir($path)) continue;
             $type = $this->classify($path);
-            if (!$this->shouldIncludeSite($path, $type, $options)) continue;
+            if (!$sitePath && !$this->shouldIncludeSite($path, $type, $options)) continue;
             $parts = explode('/', trim($path, '/'));
             $user = $parts[2] ?? basename(dirname(dirname($path)));
             if ($userFilter && $user !== $userFilter) continue;
