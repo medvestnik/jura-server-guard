@@ -14,19 +14,19 @@ class Application
     public function run(array $argv): int
     {
         $cmd = $argv[1] ?? 'list';
+        if (in_array('--help', $argv, true) || in_array('-h', $argv, true)) return $this->help($cmd);
         try {
             return match ($cmd) {
                 'serve' => $this->serve($argv), 'migrate' => $this->migrate(), 'guard:seed-rules' => $this->seedRules(), 'guard:create-admin' => $this->createAdmin($argv[2] ?? env_value('JURA_ADMIN_EMAIL','admin@example.com'), $argv[3] ?? bin2hex(random_bytes(12))),
                 'guard:scan' => $this->scan('full', null, $argv), 'guard:scan-user' => $this->scan('user', $argv[2] ?? null, $argv), 'guard:scan-site' => $this->scan('site', $argv[2] ?? null, $argv), 'guard:logs' => $this->logs($argv),
                 'guard:backup-detect' => $this->backupDetect(), 'guard:backups:list-users' => $this->backupUsers(), 'guard:backups:list' => $this->backupList($argv), 'guard:backups:find-file' => $this->backupFind($argv), 'guard:backups:preview' => $this->backupPreview($argv), 'guard:backups:diff' => $this->backupDiff($argv), 'guard:backups:restore-file' => $this->backupRestore($argv),
                 'guard:signature-list' => $this->signatureList(), 'guard:signature-test' => $this->signatureTest((int)($argv[2] ?? 0), $argv[3] ?? ''), 'guard:signature-suggest' => $this->signatureSuggest((int)($argv[2] ?? 0)), 'guard:signature-enable' => $this->signatureToggle((int)($argv[2] ?? 0), true), 'guard:signature-disable' => $this->signatureToggle((int)($argv[2] ?? 0), false), 'guard:scan-active' => $this->scanActive(), 'guard:scan-unlock' => $this->scanUnlock($argv), 'guard:cleanup-running-scans' => $this->cleanupRunningScans($argv), 'guard:prune' => $this->prune($argv), 'guard:db-stats' => $this->dbStats(), 'guard:optimize-db' => $this->optimizeDb(),
-                'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:status' => $this->status(), 'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
+                'guard:sites' => $this->sites(), 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:status' => $this->status(), 'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
             };
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
     }
 
-    private function help(): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--skip-logs]\n  guard:logs [--force] [--no-lock]\n  guard:scan-active
-  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
+    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
     private function noop(string $cmd): int { if ($cmd==='key:generate') $this->ensureKey(); echo "$cmd complete.\n"; return 0; }
     private function ensureKey(): void { $env=base_path('.env'); if (!is_file($env) && is_file(base_path('.env.example'))) copy(base_path('.env.example'), $env); if (is_file($env)) { $c=file_get_contents($env); if (preg_match('/^APP_KEY=\s*$/m',$c)) file_put_contents($env,preg_replace('/^APP_KEY=\s*$/m','APP_KEY=base64:'.base64_encode(random_bytes(32)),$c)); } }
 
@@ -66,7 +66,9 @@ class Application
         if ($driver === 'mysql') {
             try { DB::pdo()->exec('ALTER TABLE log_events MODIFY uri LONGTEXT NULL, MODIFY raw_line LONGTEXT NOT NULL'); } catch (\Throwable) {}
         }
-        foreach (['cms_version','cms_detected_at','cms_admin_path','cms_notes'] as $col) $this->ensureColumn('sites', $col, $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+        foreach (['cms_version','cms_admin_path','cms_notes'] as $col) $this->ensureColumn('sites', $col, $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+        $this->ensureColumn('sites', 'cms_detected_at', $driver === 'mysql' ? 'DATETIME NULL' : 'TEXT NULL');
+        if ($driver === 'mysql') { try { DB::pdo()->exec('ALTER TABLE sites MODIFY cms_detected_at DATETIME NULL'); } catch (\Throwable) {} }
         $this->ensureColumn('sites', 'cms_confidence', $driver === 'mysql' ? 'INT NULL' : 'INTEGER NULL');
         foreach (['first_seen_scan_id','last_seen_scan_id','last_matched_signature_id'] as $col) $this->ensureColumn('findings', $col, $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
         foreach (['matched_signature_name','matched_signature_source','signature_match_details'] as $col) $this->ensureColumn('findings', $col, $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
@@ -320,6 +322,16 @@ class Application
     private function backupPreview(array $argv): int { echo (new IspmanagerBackupService())->preview($this->optionString($argv,'--path') ?? throw new \InvalidArgumentException('--path required'), $this->optionString($argv,'--date') ?? throw new \InvalidArgumentException('--date required')); return 0; }
     private function backupDiff(array $argv): int { echo (new IspmanagerBackupService())->diff($this->optionString($argv,'--path') ?? throw new \InvalidArgumentException('--path required'), $this->optionString($argv,'--date') ?? throw new \InvalidArgumentException('--date required'))."\n"; return 0; }
     private function backupRestore(array $argv): int { $id=(new IspmanagerBackupService())->restore($this->optionString($argv,'--path') ?? throw new \InvalidArgumentException('--path required'), $this->optionString($argv,'--date') ?? throw new \InvalidArgumentException('--date required')); echo "Restore action #$id completed.\n"; return 0; }
+
+
+    private function sites(): int
+    {
+        echo "server_user\tsite\tpath\tcms\tversion\tconfidence\tnotes\n";
+        foreach (DB::select('SELECT u.name AS server_user, s.name AS site, s.path, s.cms_type, s.cms_version, s.cms_confidence, s.cms_notes FROM sites s LEFT JOIN users u ON u.id = s.server_user_id ORDER BY u.name, s.name') as $r) {
+            echo ($r['server_user'] ?? '')."\t{$r['site']}\t{$r['path']}\t".($r['cms_type'] ?? '')."\t".($r['cms_version'] ?? '')."\t".($r['cms_confidence'] ?? '')."\t".($r['cms_notes'] ?? '')."\n";
+        }
+        return 0;
+    }
 
     private function status(): int { $last=DB::first('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1')?:[]; $users=DB::first('SELECT COUNT(*) c FROM users')['c']??0; $sites=DB::first('SELECT COUNT(*) c FROM sites')['c']??0; $find=DB::first("SELECT COUNT(*) c FROM findings WHERE status='new'")['c']??0; echo "Jura Server Guard status\nDB: ".DB::driver()."\nUsers: $users\nSites: $sites\nNew findings: $find\nLast scan: ".($last['started_at']??'never')." (".($last['status']??'n/a').")\n"; return 0; }
 }
