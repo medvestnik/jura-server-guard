@@ -38,7 +38,7 @@ class ScannerService
         $pid = getmypid() ?: null;
         $deadlineAt = $this->deadlineAt($options);
         $options['deadline_at'] = $deadlineAt;
-        $totalEstimated = $this->estimateTotalFiles($scopeType, $scopeValue, $options);
+        $totalEstimated = $this->scanMode($options) === 'changed_only' ? null : $this->estimateTotalFiles($scopeType, $scopeValue, $options);
         $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,pid,total_files_estimated,last_heartbeat_at,progress_message,scan_mode,previous_scan_id,files_scanned,skipped_media,skipped_directories,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$profile,$pid,$totalEstimated,now(),'Starting scan',$scanMode,$previousRunId,now(),now()]);
         $files = 0; $findings = 0;
         $stop = function (string $signal) use (&$runId, &$files, &$findings): void {
@@ -90,6 +90,7 @@ class ScannerService
 
     private function scanSite(array $site, int $runId, array $options, int $baseFiles = 0, int $baseFindings = 0): array
     {
+        if ($this->scanMode($options) === 'changed_only') return $this->scanSiteChangedOnly($site, $runId, $options, $baseFiles, $baseFindings);
         $start = time(); $count = 0; $findings = 0; $seen = []; $mode = $this->scanMode($options);
         $maxFiles = (int)($options['max_files'] ?? config('guard.max_files_per_site'));
         $maxSeconds = (int)($options['max_seconds'] ?? config('guard.max_scan_seconds_per_site'));
@@ -125,6 +126,80 @@ class ScannerService
         if (!$dryRun) foreach (DB::select('SELECT id,path FROM file_snapshots WHERE site_id=? AND is_missing=0', [$site['id']]) as $snap) if (!isset($seen[$snap['path']]) && !file_exists($snap['path'])) { $this->diffStats['files_deleted']++; $this->diffStats['files_changed_total']++; DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,last_changed_scan_id=?,updated_at=? WHERE id=?', [now(),$runId,now(),$snap['id']]); }
         $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $site['path'] ?? null, "Finished file scan for site {$site['name']}", true);
         $this->progress($options, "Finished file scan for site {$site['name']}: files=$count findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories} elapsed=".(time()-$start).'s');
+        return [$count, $findings];
+    }
+
+
+    private function scanSiteChangedOnly(array $site, int $runId, array $options, int $baseFiles = 0, int $baseFindings = 0): array
+    {
+        $siteStart = microtime(true); $t = ['inventory_time'=>0,'manifest_compare_time'=>0,'diff_time'=>0,'candidate_selection_time'=>0,'content_scan_time'=>0,'finalize_time'=>0];
+        $findings = 0; $dryRun = (bool)($options['dry_run'] ?? false);
+        $cms = $this->detectCmsForSite($site);
+        $site = array_merge($site, ['cms_type'=>$cms['type'], 'cms_version'=>$cms['version'], 'cms_confidence'=>$cms['confidence']]);
+        $this->progress($options, "Scanning files for site {$site['name']} ({$site['path']})");
+        $this->updateRunProgress($runId, $baseFiles, $baseFindings, $site['name'] ?? null, $site['path'] ?? null, 'Building fast site manifest', true);
+
+        $a = microtime(true); $manifest = $this->buildSiteManifest($site['path'], $options); $t['inventory_time'] = microtime(true) - $a;
+        $files = array_values(array_filter($manifest['entries'], fn($e) => $e['type'] === 'file'));
+        $dirs = count($manifest['entries']) - count($files);
+        $count = count($files);
+        $this->diffStats['files_seen_total'] += $count;
+        $this->skippedMedia += count(array_filter($files, fn($e) => $this->isOrdinaryMedia($e['path'])));
+        $this->progress($options, sprintf('Inventory completed: files=%d dirs=%d elapsed=%ds', $count, $dirs, (int)round($t['inventory_time'])));
+
+        $a = microtime(true); $previous = $this->previousCompletedManifest($site['id']); $t['manifest_compare_time'] = microtime(true) - $a;
+        if ($previous && ($previous['site_manifest_hash'] ?? null) === $manifest['site_manifest_hash']) {
+            $this->diffStats['files_skipped_unchanged'] += $count;
+            $this->progress($options, 'Manifest unchanged: skipped content analysis');
+            $this->progress($options, 'No file changes detected; skipped content analysis');
+            $this->writeManifestSummary($runId, $site['id'], $manifest, $t + ['elapsed'=>microtime(true)-$siteStart, 'message'=>'No file changes detected; skipped content analysis']);
+            return [$count, 0];
+        }
+
+        $a = microtime(true); $previousRows = $this->loadSnapshotMap($site['id']); $t['diff_time'] = microtime(true) - $a;
+        $needsBaselineRefresh = $previousRows && $this->snapshotMapNeedsMetadataBaseline($previousRows);
+        $new=[]; $modified=[]; $unchanged=[]; $currentByPathHash=[];
+        foreach ($files as $entry) {
+            $currentByPathHash[$entry['path_hash']] = $entry;
+            $row = $previousRows[$entry['path_hash']] ?? null;
+            if (!$row) $new[] = $entry;
+            elseif ($needsBaselineRefresh || $this->manifestMetadataUnchanged($row, $entry)) $unchanged[] = $entry;
+            else $modified[] = $entry;
+        }
+        $deleted = [];
+        foreach ($previousRows as $hash => $row) if (!isset($currentByPathHash[$hash]) && empty($row['is_missing'])) $deleted[] = $row;
+        if ($needsBaselineRefresh) { $new = []; $modified = []; $deleted = []; $unchanged = $files; }
+        $this->diffStats['files_new'] += count($new); $this->diffStats['files_modified'] += count($modified); $this->diffStats['files_deleted'] += count($deleted);
+        $this->diffStats['files_changed_total'] += count($new) + count($modified) + count($deleted);
+        $this->diffStats['files_skipped_unchanged'] += count($unchanged);
+        $this->progress($options, sprintf('Diff completed: new=%d modified=%d deleted=%d unchanged=%d elapsed=%ds%s', count($new), count($modified), count($deleted), count($unchanged), (int)round($t['diff_time']), $needsBaselineRefresh ? ' (Snapshot schema changed; refreshed baseline)' : ''));
+
+        $a = microtime(true); $forced = $this->changedOnlyForcedHashes($site['path'], $options); $candidates=[];
+        foreach (array_merge($new, $modified) as $e) if ($this->shouldScanFile($e['path'], $site['path'], $options)) $candidates[$e['path_hash']] = $e;
+        foreach ($files as $e) if (isset($forced[$e['path_hash']]) || (($options['paranoid'] ?? false) && $this->paranoidRecheckCandidate($e['path'], $e['relative_path']))) $candidates[$e['path_hash']] = $e;
+        $t['candidate_selection_time'] = microtime(true) - $a;
+
+        $a = microtime(true);
+        foreach ($candidates as $entry) {
+            if ($this->deadlineReached($options)) { $this->limitReached = true; break; }
+            $meta = $this->metaFromManifestEntry($entry, $previousRows[$entry['path_hash']] ?? null);
+            $change = isset($previousRows[$entry['path_hash']]) ? 'changed' : 'new';
+            $this->diffStats['files_analyzed']++;
+            foreach ($this->detect($site, $entry['path'], $entry['relative_path'], $meta, $change, $options) as $finding) {
+                if (!$dryRun) $this->upsertFinding($runId, $site['id'], $entry['path'], $meta, $finding);
+                $findings++;
+            }
+        }
+        $t['content_scan_time'] = microtime(true) - $a;
+        $this->progress($options, sprintf('Content scan completed: candidates=%d findings=%d elapsed=%ds', count($candidates), $findings, (int)round($t['content_scan_time'])));
+
+        $a = microtime(true);
+        if (!$dryRun) { $this->refreshSnapshotsFromManifest($site['id'], $runId, $files, $previousRows, $currentByPathHash, $deleted); $this->writeManifestSummary($runId, $site['id'], $manifest, $t + ['elapsed'=>microtime(true)-$siteStart, 'baseline_refreshed'=>$needsBaselineRefresh]); }
+        $t['finalize_time'] = microtime(true) - $a;
+        if ($needsBaselineRefresh) $this->progress($options, 'Snapshot schema changed; refreshed baseline');
+        $this->progress($options, sprintf('Changed-only timings: inventory_time=%.3fs manifest_compare_time=%.3fs diff_time=%.3fs candidate_selection_time=%.3fs content_scan_time=%.3fs finalize_time=%.3fs', $t['inventory_time'], $t['manifest_compare_time'], $t['diff_time'], $t['candidate_selection_time'], $t['content_scan_time'], $t['finalize_time']));
+        $this->updateRunProgress($runId, $baseFiles + $count, $baseFindings + $findings, $site['name'] ?? null, $site['path'] ?? null, "Finished changed-only scan for site {$site['name']}", true);
+        $this->progress($options, "Finished file scan for site {$site['name']}: files=$count findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories} elapsed=".(int)round(microtime(true)-$siteStart).'s');
         return [$count, $findings];
     }
 
@@ -245,6 +320,79 @@ class ScannerService
         DB::statement("UPDATE file_snapshots SET site_id=?,path_hash=?,relative_path=?,owner=?,$groupCol=?,permissions=?,size=?,mtime=?,ctime=?,inode=?,mode=?,uid=?,gid=?,extension=?,file_category=?,sha256=?,last_seen_at=?,last_seen_scan_id=?,last_changed_scan_id=CASE WHEN ? THEN ? ELSE last_changed_scan_id END,last_changed_at=CASE WHEN ? THEN ? ELSE last_changed_at END,is_missing=0,updated_at=? WHERE id=?", [$siteId,$pathHash,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['ctime'],$m['inode'],$m['mode'],$m['uid'],$m['gid'],$m['extension'],$m['file_category'],$sha,now(),$GLOBALS['__guard_scan_run_id'] ?? null,$changed?1:0,$GLOBALS['__guard_scan_run_id'] ?? null,$changed?1:0,now(),now(),$row['id']]);
         return $changed ? 'changed' : 'same';
     }
+
+
+    private function buildSiteManifest(string $root, array $options): array
+    {
+        $root = rtrim(realpath($root) ?: $root, '/');
+        $entries = $this->findManifestEntries($root, $options);
+        if ($entries === null) $entries = $this->phpManifestEntries($root, $options);
+        usort($entries, fn($a,$b) => [$a['relative_path'],$a['type']] <=> [$b['relative_path'],$b['type']]);
+        $fileLines=[]; $dirLines=[]; $metaLines=[];
+        foreach ($entries as $e) {
+            $line = implode("\t", [$e['relative_path'],$e['type'],$e['size'],$e['mtime'],$e['ctime'],$e['mode'],$e['uid'],$e['gid'],$e['extension'],$e['file_category']]);
+            if ($e['type'] === 'directory') $dirLines[] = $line; else $fileLines[] = $line;
+            $metaLines[] = $line;
+        }
+        return ['entries'=>$entries, 'site_manifest_hash'=>hash('sha256', implode("\n", $metaLines)), 'file_list_hash'=>hash('sha256', implode("\n", array_map(fn($e)=>$e['relative_path'], array_filter($entries, fn($e)=>$e['type']==='file')))), 'directory_list_hash'=>hash('sha256', implode("\n", array_map(fn($e)=>$e['relative_path'], array_filter($entries, fn($e)=>$e['type']==='directory')))), 'metadata_hash'=>hash('sha256', implode("\n", $metaLines))];
+    }
+
+    private function findManifestEntries(string $root, array $options): ?array
+    {
+        if (!$this->commandExists('find')) return null;
+        $cmd = ['find', $root, '-xdev'];
+        $prunes = $this->findPruneExpressions($root, $options);
+        foreach ($prunes as $i => $path) { if ($i === 0) $cmd[]='('; else $cmd[]='-o'; array_push($cmd, '-path', $path); }
+        if ($prunes) array_push($cmd, ')', '-prune', '-o');
+        array_push($cmd, '-printf', '%y\t%p\t%s\t%T@\t%C@\t%m\t%U\t%G\n');
+        $descriptors = [1=>['pipe','w'], 2=>['pipe','w']]; $proc = @proc_open($cmd, $descriptors, $pipes);
+        if (!is_resource($proc)) return null;
+        $out = stream_get_contents($pipes[1]); fclose($pipes[1]); if (isset($pipes[2])) fclose($pipes[2]);
+        $code = proc_close($proc); if ($code !== 0) return null;
+        $entries=[];
+        foreach (explode("\n", trim($out)) as $line) {
+            if ($line === '') continue; $p = explode("\t", $line); if (count($p) < 8) continue;
+            [$y,$path,$size,$mtime,$ctime,$mode,$uid,$gid] = $p; if ($path === $root) continue;
+            if ($y !== 'f' && $y !== 'd') continue;
+            $rel = ltrim(substr($path, strlen($root)), '/'); if ($rel === '' || $this->isVolatileScannerPath($path, $root, $rel)) continue;
+            $type = $y === 'd' ? 'directory' : 'file'; $ext = $type === 'file' ? strtolower(pathinfo($path, PATHINFO_EXTENSION)) : '';
+            $cat = $type === 'file' ? $this->fileCategory($path, $rel) : 'directory';
+            $entries[] = ['path'=>$path,'relative_path'=>$rel,'path_hash'=>hash('sha256',$path),'type'=>$type,'size'=>(int)$size,'mtime'=>gmdate('Y-m-d H:i:s',(int)floor((float)$mtime)),'ctime'=>gmdate('Y-m-d H:i:s',(int)floor((float)$ctime)),'mode'=>(string)$mode,'uid'=>(string)$uid,'gid'=>(string)$gid,'extension'=>$ext,'file_category'=>$cat];
+        }
+        return $entries;
+    }
+
+    private function phpManifestEntries(string $root, array $options): array
+    {
+        $entries=[]; $it = new RecursiveIteratorIterator($this->filteredIterator($root, $options), RecursiveIteratorIterator::SELF_FIRST);
+        foreach ($it as $file) {
+            if ($file->isLink()) continue; $path=$file->getPathname(); $rel=ltrim(substr($path, strlen($root)), '/'); if ($rel==='' || $this->isVolatileScannerPath($path, $root, $rel)) continue;
+            $st=@stat($path) ?: []; $type=$file->isDir()?'directory':'file'; if ($type !== 'directory' && !$file->isFile()) continue;
+            $entries[]=['path'=>$path,'relative_path'=>$rel,'path_hash'=>hash('sha256',$path),'type'=>$type,'size'=>$type==='file'?($file->getSize()?:0):0,'mtime'=>gmdate('Y-m-d H:i:s',(int)($st['mtime']??0)),'ctime'=>gmdate('Y-m-d H:i:s',(int)($st['ctime']??0)),'mode'=>(string)($st['mode']??''),'uid'=>(string)($st['uid']??''),'gid'=>(string)($st['gid']??''),'extension'=>$type==='file'?strtolower(pathinfo($path, PATHINFO_EXTENSION)):'','file_category'=>$type==='file'?$this->fileCategory($path,$rel):'directory'];
+        }
+        return $entries;
+    }
+
+    private function findPruneExpressions(string $root, array $options): array
+    {
+        $root = rtrim($root, '/');
+        $p = ['/cache/*','/tmp/*','/temp/*','/storage/cache/*','/node_modules/*','/vendor/*','/.jura-*/*','/quarantine/*','/evidence/*'];
+        if (!($options['include_old'] ?? config('guard.scan_old_dubl_by_default'))) array_push($p, '/OLD/*','/old.*/*','/DUBL*/*','/dubl*/*');
+        if (!($options['include_backups'] ?? false)) array_push($p, '/*backup*/*','/*bak*/*');
+        return array_values(array_unique(array_map(fn($x) => $root.$x, $p)));
+    }
+    private function commandExists(string $cmd): bool { $r = trim((string)@shell_exec('command -v '.escapeshellarg($cmd).' 2>/dev/null')); return $r !== ''; }
+    private function isVolatileScannerPath(string $path, string $root, string $rel): bool { return (bool)preg_match('#(^|/)(\.jura[^/]*|quarantine|evidence)(/|$)#i', $rel) || str_starts_with($path, rtrim((string)config('guard.quarantine_path'), '/').'/'); }
+
+    private function previousCompletedManifest(int $siteId): ?array { foreach (DB::select("SELECT site_manifest_hash,file_list_hash,directory_list_hash,metadata_hash,diff_summary FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND site_manifest_hash IS NOT NULL ORDER BY id DESC LIMIT 25") as $r) { $j=json_decode((string)($r['diff_summary'] ?? ''), true) ?: []; $j = array_merge($j, ['site_manifest_hash'=>$r['site_manifest_hash'] ?? null, 'file_list_hash'=>$r['file_list_hash'] ?? null, 'directory_list_hash'=>$r['directory_list_hash'] ?? null, 'metadata_hash'=>$r['metadata_hash'] ?? null]); if (!empty($j['site_manifest_hash'])) return $j; } return null; }
+    private function writeManifestSummary(int $runId, int $siteId, array $manifest, array $extra=[]): void { $summary = json_encode(array_merge($this->diffStats, ['site_id'=>$siteId,'site_manifest_hash'=>$manifest['site_manifest_hash'],'file_list_hash'=>$manifest['file_list_hash'],'directory_list_hash'=>$manifest['directory_list_hash'],'metadata_hash'=>$manifest['metadata_hash']], $extra), JSON_UNESCAPED_SLASHES); DB::statement('UPDATE scan_runs SET site_manifest_hash=?,file_list_hash=?,directory_list_hash=?,metadata_hash=?,diff_summary=? WHERE id=?', [$manifest['site_manifest_hash'],$manifest['file_list_hash'],$manifest['directory_list_hash'],$manifest['metadata_hash'],$summary,$runId]); }
+    private function loadSnapshotMap(int $siteId): array { $rows=DB::select('SELECT * FROM file_snapshots WHERE site_id=? AND is_missing=0', [$siteId]); $m=[]; foreach($rows as $r) $m[$r['path_hash']]=$r; return $m; }
+    private function snapshotMapNeedsMetadataBaseline(array $rows): bool { foreach ($rows as $r) { foreach (['ctime','mode','uid','gid','extension','file_category'] as $k) if (($r[$k] ?? null) === null || (string)($r[$k] ?? '') === '') return true; if ((int)($r['mode'] ?? 0) > 7777) return true; } return false; }
+    private function manifestMetadataUnchanged(array $row, array $e): bool { foreach (['size','mtime','ctime','mode','uid','gid','extension','file_category'] as $k) if ((string)($row[$k] ?? '') !== (string)($e[$k] ?? '')) return false; return true; }
+    private function metaFromManifestEntry(array $e, ?array $previous=null): array { return ['size'=>$e['size'],'mtime'=>$e['mtime'],'ctime'=>$e['ctime'],'inode'=>$previous['inode']??null,'mode'=>$e['mode'],'uid'=>$e['uid'],'gid'=>$e['gid'],'extension'=>$e['extension'],'file_category'=>$e['file_category'],'sha256'=>$previous['sha256']??null,'owner'=>$e['uid'],'group'=>$e['gid'],'permissions'=>$e['mode']]; }
+    private function changedOnlyForcedHashes(string $root, array $options): array { $h=[]; foreach (DB::select("SELECT path_hash FROM findings WHERE risk IN ('critical','high') AND status NOT IN ('ignored','quarantined','resolved')") as $r) $h[$r['path_hash']]=true; foreach ((array)($options['force_paths'] ?? []) as $p) $h[hash('sha256',$p)]=true; return $h; }
+    private function refreshSnapshotsFromManifest(int $siteId, int $runId, array $files, array $previousRows, array $currentByPathHash, array $deleted): void { foreach ($files as $e) { $prev=$previousRows[$e['path_hash']]??null; $m=$this->metaFromManifestEntry($e,$prev); $this->snapshot($siteId,$e['path'],$e['path_hash'],$e['relative_path'],$m,$prev); } foreach ($deleted as $r) DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,last_changed_scan_id=?,updated_at=? WHERE id=?', [now(),$runId,now(),$r['id']]); }
+
 
     private function deadlineAt(array $options): ?int { $max = (int)($options['max_seconds'] ?? 0); return $max > 0 ? time() + $max : null; }
     private function deadlineReached(array $options): bool { return !empty($options['deadline_at']) && time() >= (int)$options['deadline_at']; }
