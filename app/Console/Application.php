@@ -46,7 +46,9 @@ class Application
     {
         $driver = DB::driver();
         $file = base_path('database/migrations/0001_create_guard_tables' . ($driver === 'mysql' ? '.mysql' : '') . '.sql');
-        foreach (array_filter(array_map('trim', explode(';', file_get_contents($file)))) as $sql) DB::pdo()->exec($sql);
+        foreach (array_filter(array_map('trim', explode(';', file_get_contents($file)))) as $sql) {
+            try { DB::pdo()->exec($sql); } catch (\Throwable $e) { fwrite(STDERR, "WARNING: base migration statement failed, continuing: {$e->getMessage()}\n"); }
+        }
         $this->ensureSchemaCompatibility();
         (new RuleRepository())->seedDefaults();
         echo "Migrated {$driver} database" . ($driver === 'sqlite' ? ': '.DB::path() : '.') . "\n";
