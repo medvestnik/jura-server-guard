@@ -21,12 +21,14 @@ class Application
                 'guard:scan' => $this->scan('full', null, $argv), 'guard:scan-user' => $this->scan('user', $argv[2] ?? null, $argv), 'guard:scan-site' => $this->scan('site', $argv[2] ?? null, $argv), 'guard:logs' => $this->logs($argv),
                 'guard:backup-detect' => $this->backupDetect(), 'guard:backups:list-users' => $this->backupUsers(), 'guard:backups:list' => $this->backupList($argv), 'guard:backups:find-file' => $this->backupFind($argv), 'guard:backups:preview' => $this->backupPreview($argv), 'guard:backups:diff' => $this->backupDiff($argv), 'guard:backups:restore-file' => $this->backupRestore($argv),
                 'guard:signature-list' => $this->signatureList(), 'guard:signature-test' => $this->signatureTest((int)($argv[2] ?? 0), $argv[3] ?? ''), 'guard:signature-suggest' => $this->signatureSuggest((int)($argv[2] ?? 0)), 'guard:signature-enable' => $this->signatureToggle((int)($argv[2] ?? 0), true), 'guard:signature-disable' => $this->signatureToggle((int)($argv[2] ?? 0), false), 'guard:scan-active' => $this->scanActive(), 'guard:scan-unlock' => $this->scanUnlock($argv), 'guard:cleanup-running-scans' => $this->cleanupRunningScans($argv), 'guard:prune' => $this->prune($argv), 'guard:db-stats' => $this->dbStats(), 'guard:optimize-db' => $this->optimizeDb(),
-                'guard:sites' => $this->sites(), 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:status' => $this->status(), 'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
+                'guard:sites' => $this->sites(), 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:status' => $this->status(),
+                'guard:ip-list' => $this->ipList(), 'guard:ip-add' => $this->ipAdd($argv), 'guard:ip-remove' => $this->ipRemove($argv), 'guard:find-hash' => $this->findHash($argv),
+                'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
             };
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
     }
 
-    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
+    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
     private function noop(string $cmd): int { if ($cmd==='key:generate') $this->ensureKey(); echo "$cmd complete.\n"; return 0; }
     private function ensureKey(): void { $env=base_path('.env'); if (!is_file($env) && is_file(base_path('.env.example'))) copy(base_path('.env.example'), $env); if (is_file($env)) { $c=file_get_contents($env); if (preg_match('/^APP_KEY=\s*$/m',$c)) file_put_contents($env,preg_replace('/^APP_KEY=\s*$/m','APP_KEY=base64:'.base64_encode(random_bytes(32)),$c)); } }
 
@@ -105,6 +107,7 @@ class Application
         }
         $this->backfillScanRunCompatibilityColumns();
         $this->ensureRestoreActionsTable($driver);
+        $this->ensureThreatIpsTable($driver);
 
         foreach (DB::select('SELECT id,path FROM file_snapshots WHERE path_hash IS NULL OR path_hash = ?', ['']) as $row) DB::statement('UPDATE file_snapshots SET path_hash=? WHERE id=?', [hash('sha256', (string)$row['path']), $row['id']]);
         foreach (DB::select('SELECT id,path,type,rule_key,fingerprint,sha256 FROM findings WHERE path_hash IS NULL OR path_hash = ? OR finding_hash IS NULL OR finding_hash = ?', ['', '']) as $row) {
@@ -212,6 +215,12 @@ class Application
     {
         if ($driver === 'mysql') DB::pdo()->exec("CREATE TABLE IF NOT EXISTS restore_actions (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, admin_user_id BIGINT UNSIGNED NULL, original_path VARCHAR(2048) NOT NULL, backup_provider VARCHAR(64) NOT NULL, backup_user VARCHAR(255) NULL, backup_date VARCHAR(64) NULL, backup_source_archive TEXT NULL, previous_sha256 CHAR(64) NULL, restored_sha256 CHAR(64) NULL, previous_size BIGINT NULL, restored_size BIGINT NULL, quarantine_path TEXT NULL, created_at DATETIME NULL, status VARCHAR(32) NOT NULL DEFAULT 'pending', error_message TEXT NULL, INDEX restore_actions_path_idx(original_path(191))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         else DB::pdo()->exec("CREATE TABLE IF NOT EXISTS restore_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_user_id INTEGER NULL, original_path TEXT NOT NULL, backup_provider TEXT NOT NULL, backup_user TEXT NULL, backup_date TEXT NULL, backup_source_archive TEXT NULL, previous_sha256 TEXT NULL, restored_sha256 TEXT NULL, previous_size INTEGER NULL, restored_size INTEGER NULL, quarantine_path TEXT NULL, created_at TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT NULL)");
+    }
+
+    private function ensureThreatIpsTable(string $driver): void
+    {
+        if ($driver === 'mysql') DB::pdo()->exec("CREATE TABLE IF NOT EXISTS threat_ips (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, ip VARCHAR(64) NOT NULL, classification VARCHAR(32) NOT NULL DEFAULT 'unknown', risk VARCHAR(32) NOT NULL DEFAULT 'medium', notes TEXT NULL, hit_count BIGINT NOT NULL DEFAULT 0, source VARCHAR(32) NOT NULL DEFAULT 'manual', first_seen_at DATETIME NULL, last_seen_at DATETIME NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_threat_ips_ip(ip)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        else DB::pdo()->exec("CREATE TABLE IF NOT EXISTS threat_ips (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT NOT NULL UNIQUE, classification TEXT NOT NULL DEFAULT 'unknown', risk TEXT NOT NULL DEFAULT 'medium', notes TEXT NULL, hit_count INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'manual', first_seen_at TEXT NULL, last_seen_at TEXT NULL, created_at TEXT, updated_at TEXT)");
     }
 
     private function ensureColumn(string $table, string $column, string $definition): void
@@ -346,4 +355,30 @@ class Application
     }
 
     private function status(): int { $last=DB::first('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1')?:[]; $users=DB::first('SELECT COUNT(*) c FROM users')['c']??0; $sites=DB::first('SELECT COUNT(*) c FROM sites')['c']??0; $find=DB::first("SELECT COUNT(*) c FROM findings WHERE status='new'")['c']??0; echo "Jura Server Guard status\nDB: ".DB::driver()."\nUsers: $users\nSites: $sites\nNew findings: $find\nLast scan: ".($last['started_at']??'never')." (".($last['status']??'n/a').")\n"; return 0; }
+
+    private function ipList(): int { echo "ip\tclassification\trisk\thit_count\tfirst_seen_at\tlast_seen_at\tnotes\n"; foreach (DB::select('SELECT * FROM threat_ips ORDER BY updated_at DESC') as $r) echo "{$r['ip']}\t{$r['classification']}\t{$r['risk']}\t{$r['hit_count']}\t{$r['first_seen_at']}\t{$r['last_seen_at']}\t".str_replace(["\t","\n"],' ',(string)$r['notes'])."\n"; return 0; }
+    private function ipAdd(array $argv): int {
+        $ip = trim((string)($argv[2] ?? '')); if ($ip === '') throw new \InvalidArgumentException('ip is required.');
+        $classification = $this->optionString($argv, '--classification') ?? 'unknown';
+        $risk = $this->optionString($argv, '--risk') ?? 'medium';
+        $notes = $this->optionString($argv, '--notes') ?? '';
+        $this->upsertThreatIp($ip, $classification, $risk, $notes, 'cli');
+        echo "Recorded threat IP $ip ($classification, $risk).\n";
+        return 0;
+    }
+    private function ipRemove(array $argv): int { $ip = trim((string)($argv[2] ?? '')); if ($ip === '') throw new \InvalidArgumentException('ip is required.'); DB::statement('DELETE FROM threat_ips WHERE ip=?', [$ip]); echo "Removed $ip from threat IPs.\n"; return 0; }
+    private function upsertThreatIp(string $ip, string $classification, string $risk, string $notes, string $source): void {
+        $existing = DB::first('SELECT id,hit_count,first_seen_at FROM threat_ips WHERE ip=?', [$ip]);
+        if ($existing) DB::statement('UPDATE threat_ips SET classification=?, risk=?, notes=?, hit_count=?, last_seen_at=?, updated_at=? WHERE id=?', [$classification, $risk, $notes, (int)$existing['hit_count'] + 1, now(), now(), $existing['id']]);
+        else DB::insert('INSERT INTO threat_ips (ip,classification,risk,notes,hit_count,source,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,1,?,?,?,?,?)', [$ip, $classification, $risk, $notes, $source, now(), now(), now(), now()]);
+    }
+
+    private function findHash(array $argv): int {
+        $hash = strtolower(trim((string)($argv[2] ?? ''))); if ($hash === '') throw new \InvalidArgumentException('sha256 is required.');
+        $rows = DB::select('SELECT fs.path, fs.is_missing, fs.last_seen_at, s.name site_name, u.name user_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE fs.sha256=? ORDER BY fs.last_seen_at DESC LIMIT 200', [$hash]);
+        if (!$rows) { echo "No files with sha256=$hash found in file_snapshots.\n"; return 0; }
+        echo "user\tsite\tpath\tmissing\tlast_seen_at\n";
+        foreach ($rows as $r) echo ($r['user_name'] ?? '')."\t".($r['site_name'] ?? '')."\t{$r['path']}\t".($r['is_missing'] ? 'yes' : 'no')."\t{$r['last_seen_at']}\n";
+        return 0;
+    }
 }
