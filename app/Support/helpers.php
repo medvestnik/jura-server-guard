@@ -41,3 +41,26 @@ function e(mixed $value): string { return htmlspecialchars((string)$value, ENT_Q
 function redirect(string $to): never { header('Location: ' . $to); exit; }
 function now(): string { return gmdate('Y-m-d H:i:s'); }
 function bool_env(string $key, bool $default = false): bool { return filter_var(env_value($key, $default ? 'true' : 'false'), FILTER_VALIDATE_BOOLEAN); }
+function available_locales(): array { return ['ru' => 'Русский', 'uk' => 'Українська', 'en' => 'English']; }
+function current_locale(): string {
+    static $locale = null;
+    if ($locale !== null) return $locale;
+    $available = array_keys(available_locales());
+    $cookie = $_COOKIE['jura_lang'] ?? null;
+    if (is_string($cookie) && in_array($cookie, $available, true)) return $locale = $cookie;
+    $default = (string) env_value('JURA_DEFAULT_LOCALE', 'ru');
+    return $locale = in_array($default, $available, true) ? $default : 'en';
+}
+function translations(string $locale): array {
+    static $tables = [];
+    if (!isset($tables[$locale])) {
+        $file = base_path("resources/lang/$locale.php");
+        $tables[$locale] = ($locale !== 'en' && is_file($file)) ? require $file : [];
+    }
+    return $tables[$locale];
+}
+function t(string $text, array $replace = []): string {
+    $translated = translations(current_locale())[$text] ?? $text;
+    foreach ($replace as $key => $value) $translated = str_replace(':' . $key, (string) $value, $translated);
+    return $translated;
+}

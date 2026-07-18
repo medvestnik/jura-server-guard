@@ -5,6 +5,9 @@ use App\Support\DB;
 
 class RuleRepository
 {
+    private static ?array $enabledRulesCache = null;
+    private static ?array $allowlistCache = null;
+
     public function seedDefaults(): void
     {
         $rules = require base_path('rules/default-rules.php');
@@ -18,6 +21,8 @@ class RuleRepository
         foreach (['home.php','restore.php','extract.php','download.php','Uri.php','Blog.php','wp-blog-header.php','nusoap.php'] as $safeName) {
             DB::statement('UPDATE rules SET enabled=0, updated_at=? WHERE pattern=? AND type IN (\'webshell\',\'suspicious_php\')', [now(), $safeName]);
         }
+        self::$enabledRulesCache = null;
+        self::$allowlistCache = null;
     }
     private function insertRule(string $name, string $risk, string $type, string $pattern, string $patternType, ?string $description): void
     {
@@ -27,8 +32,8 @@ class RuleRepository
     {
         if (!DB::first('SELECT id FROM allowlist_rules WHERE path_pattern = ?', [$path])) DB::insert('INSERT INTO allowlist_rules (name, path_pattern, reason, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?)', [$name, $path, $reason, 1, now(), now()]);
     }
-    public function enabledRules(): array { return DB::select('SELECT * FROM rules WHERE enabled = 1 ORDER BY risk DESC, name'); }
-    public function allowlist(): array { return DB::select('SELECT * FROM allowlist_rules WHERE enabled = 1'); }
+    public function enabledRules(): array { return self::$enabledRulesCache ??= DB::select('SELECT * FROM rules WHERE enabled = 1 ORDER BY risk DESC, name'); }
+    public function allowlist(): array { return self::$allowlistCache ??= DB::select('SELECT * FROM allowlist_rules WHERE enabled = 1'); }
     public function isAllowed(string $path, ?string $sha256 = null): bool
     {
         foreach ($this->allowlist() as $rule) {

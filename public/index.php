@@ -5,6 +5,7 @@ use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modu
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 try { DB::pdo(); } catch (Throwable $e) { echo 'Database not initialized. Run php artisan migrate.'; exit; }
+if (preg_match('#^/lang/([a-z]{2})$#', $path, $m) && array_key_exists($m[1], available_locales())) { setcookie('jura_lang', $m[1], time() + 31536000, '/', '', false, true); redirect($_SERVER['HTTP_REFERER'] ?? '/'); }
 if ($path === '/login' && $method === 'POST') { Auth::attempt($_POST['email'] ?? '', $_POST['password'] ?? '') ? redirect('/') : print view('auth.login', ['error'=>'Invalid credentials']); exit; }
 if ($path === '/login') { echo view('auth.login'); exit; }
 if ($path === '/logout') { Auth::logout(); redirect('/login'); }
