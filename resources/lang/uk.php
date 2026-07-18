@@ -306,4 +306,32 @@ return [
 
     // 404
     'Page not found.' => 'Сторінку не знайдено.',
+
+    // Signature-from-finding and cross-site hash search
+    'Same file elsewhere' => 'Такий самий файл в іншому місці',
+    'No SHA256 recorded for this finding; nothing to compare by exact content.' => 'Для цієї знахідки не збережено SHA256; порівняти за точним вмістом неможливо.',
+    'No other scanned file with this exact SHA256 was found on any site.' => 'На жодному сайті не знайдено іншого просканованого файлу з таким самим SHA256.',
+    'Byte-identical copies of this file found elsewhere. Consider creating a signature so future scans catch this automatically everywhere.' => 'Знайдено побайтово ідентичні копії цього файлу в інших місцях. Варто створити сигнатуру, щоб майбутні перевірки знаходили це автоматично всюди.',
+    'present' => 'знайдено',
+    'Source file preview' => 'Перегляд вихідного файлу',
+    'Read-only. Copy distinctive substrings from here into a combo pattern (any/regex_any/all) for fuzzy matching.' => 'Лише для читання. Скопіюйте звідси характерні рядки у combo-шаблон (any/regex_any/all) для нечіткого пошуку.',
+    'Pre-filled as an exact-hash signature from the source finding: matches only byte-identical copies of this file anywhere on the server, on the next scan. Switch pattern_type to "combo" and edit pattern_json below to also catch renamed/modified variants using distinctive code snippets from the preview.' => 'Автоматично заповнено як сигнатуру за точним хешем зі знахідки: під час наступної перевірки знайде лише побайтово ідентичні копії цього файлу на сервері. Щоб також ловити перейменовані/змінені варіанти, змініть pattern_type на "combo" і відредагуйте pattern_json нижче, використовуючи характерні фрагменти коду з перегляду.',
+
+    // Threat IPs
+    'Threat IPs' => 'IP-адреси атак',
+    'Add / update IP' => 'Додати / оновити IP',
+    'A manually curated list of attacker IPs seen in suspicious log events or found while investigating findings. Classify each IP so future investigations are faster; this list does not block traffic by itself.' => 'Список IP-адрес зловмисників, який ведеться вручну за підозрілими подіями в логах і знахідками. Класифікуйте кожен IP, щоб пришвидшити майбутні розслідування; сам список не блокує трафік.',
+    'Classification' => 'Класифікація',
+    'Notes' => 'Нотатки',
+    'Notes: what was seen, which sites/findings, dates...' => 'Нотатки: що було помічено, які сайти/знахідки, дати...',
+    'Hits' => 'Звернень',
+    'View logs' => 'Дивитися логи',
+    'Remove this IP from the list?' => 'Видалити цей IP зі списку?',
+    'Flag IP' => 'Позначити IP',
+    'manual' => 'вручну',
+    'scanner' => 'сканер',
+    'bruteforce' => 'підбір паролів',
+    'webshell_access' => 'звернення до вебшелу',
+    'bot' => 'бот',
+    'direct_login' => 'прямий вхід',
 ];

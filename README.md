@@ -87,6 +87,7 @@ Panel pages:
 - Findings
 - Suspicious logs
 - Quarantine
+- Threat IPs
 - Rules and allowlist
 - Settings
 
@@ -109,6 +110,10 @@ php artisan guard:optimize-db
 php artisan guard:quarantine FINDING_ID
 php artisan guard:restore QUARANTINE_ID
 php artisan guard:status
+php artisan guard:find-hash SHA256
+php artisan guard:ip-list
+php artisan guard:ip-add IP [--classification=...] [--risk=...] [--notes=...]
+php artisan guard:ip-remove IP
 ```
 
 Scanner and log commands use a global lock at `storage/locks/scan.lock` so timer and manual scans cannot overlap. If a scan is already running, the second command exits with the lock start time and PID. `--force` removes a stale lock; `--no-lock` is only for debugging.
@@ -143,6 +148,41 @@ For example:
 ```
 
 The original SHA-256, owner, group, permissions, mtime, original path, and quarantine path are stored in `quarantine_items`.
+
+## Turning a finding into a signature, and cross-site search
+
+On a finding page, **Create signature from this finding** now pre-fills a ready-to-save
+`hash` signature (`{"sha256":["..."]}`) from the finding's SHA-256 — saving it immediately
+makes future scans flag byte-identical copies of that exact file anywhere on the server,
+under any filename. The source file's safe preview is shown alongside the form so you can
+also write a broader `combo` pattern (distinctive strings/regexes) to catch renamed or
+lightly modified variants, not just exact copies.
+
+Every finding page also shows a **Same file elsewhere** section: an immediate lookup
+against already-scanned `file_snapshots` by SHA-256, so you can tell right away whether a
+webshell you just found also exists on another site — without waiting for the next scan.
+The same lookup is available from the CLI:
+
+```bash
+php artisan guard:find-hash <sha256>
+```
+
+## Threat IPs
+
+The **Threat IPs** panel page is a manually curated list of attacker IP addresses, each
+with a classification (`scanner`, `bruteforce`, `webshell_access`, `bot`, `direct_login`,
+`manual`, `unknown`), a risk level, and free-text notes. It does not block traffic by
+itself — it's an investigation aid. IPs seen in the Dashboard and Suspicious logs tables
+show a **Flag IP** quick action (or their classification badge if already flagged), so
+recurring attacker IPs are easy to recognize across incidents.
+
+CLI equivalents:
+
+```bash
+php artisan guard:ip-list
+php artisan guard:ip-add 1.2.3.4 --classification=webshell_access --risk=critical --notes="..."
+php artisan guard:ip-remove 1.2.3.4
+```
 
 ## Allowlist
 

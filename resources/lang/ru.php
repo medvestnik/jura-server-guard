@@ -306,4 +306,32 @@ return [
 
     // 404
     'Page not found.' => 'Страница не найдена.',
+
+    // Signature-from-finding and cross-site hash search
+    'Same file elsewhere' => 'Такой же файл в другом месте',
+    'No SHA256 recorded for this finding; nothing to compare by exact content.' => 'Для этой находки не сохранён SHA256; сравнить по точному содержимому нельзя.',
+    'No other scanned file with this exact SHA256 was found on any site.' => 'Ни на одном сайте не найдено другого просканированного файла с таким же SHA256.',
+    'Byte-identical copies of this file found elsewhere. Consider creating a signature so future scans catch this automatically everywhere.' => 'Найдены побайтово идентичные копии этого файла в других местах. Рекомендуется создать сигнатуру, чтобы будущие проверки находили это автоматически везде.',
+    'present' => 'найден',
+    'Source file preview' => 'Просмотр исходного файла',
+    'Read-only. Copy distinctive substrings from here into a combo pattern (any/regex_any/all) for fuzzy matching.' => 'Только для чтения. Скопируйте отсюда характерные строки в combo-шаблон (any/regex_any/all) для нечёткого поиска.',
+    'Pre-filled as an exact-hash signature from the source finding: matches only byte-identical copies of this file anywhere on the server, on the next scan. Switch pattern_type to "combo" and edit pattern_json below to also catch renamed/modified variants using distinctive code snippets from the preview.' => 'Автоматически заполнено как сигнатура по точному хешу из находки: при следующей проверке найдёт только побайтово идентичные копии этого файла на сервере. Чтобы также ловить переименованные/изменённые варианты, смените pattern_type на "combo" и отредактируйте pattern_json ниже, используя характерные фрагменты кода из просмотра.',
+
+    // Threat IPs
+    'Threat IPs' => 'IP-адреса атак',
+    'Add / update IP' => 'Добавить / обновить IP',
+    'A manually curated list of attacker IPs seen in suspicious log events or found while investigating findings. Classify each IP so future investigations are faster; this list does not block traffic by itself.' => 'Список IP-адресов атакующих, который ведётся вручную по подозрительным событиям в логах и находкам. Классифицируйте каждый IP, чтобы ускорить будущие расследования; сам по себе список не блокирует трафик.',
+    'Classification' => 'Классификация',
+    'Notes' => 'Заметки',
+    'Notes: what was seen, which sites/findings, dates...' => 'Заметки: что было замечено, какие сайты/находки, даты...',
+    'Hits' => 'Обращений',
+    'View logs' => 'Смотреть логи',
+    'Remove this IP from the list?' => 'Удалить этот IP из списка?',
+    'Flag IP' => 'Пометить IP',
+    'manual' => 'вручную',
+    'scanner' => 'сканер',
+    'bruteforce' => 'перебор паролей',
+    'webshell_access' => 'обращение к вебшеллу',
+    'bot' => 'бот',
+    'direct_login' => 'прямой вход',
 ];
