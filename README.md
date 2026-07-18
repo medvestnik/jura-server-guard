@@ -41,6 +41,8 @@ sudo bin/install-almalinux.sh
 
 The installer checks root privileges, asks for the database backend (MariaDB/MySQL recommended for production; SQLite for small/local installs), detects a PHP 8.2+ binary with the matching PDO extension, prepares `/opt/jura-server-guard`, creates `.env`, verifies MySQL connectivity when selected, installs Composer dependencies with the selected PHP binary, runs migrations, seeds rules, creates a random admin password, installs a localhost-only web-panel systemd service, and installs a 30-minute lock-aware scan timer. If Composer is not available in `PATH`, the installer downloads a local bundled `composer.phar` into `/opt/jura-server-guard/bin/composer.phar` and runs it through the selected PHP binary.
 
+To update an existing installation to a new release, see [`docs/UPDATING.md`](docs/UPDATING.md).
+
 Final output includes:
 
 ```text
