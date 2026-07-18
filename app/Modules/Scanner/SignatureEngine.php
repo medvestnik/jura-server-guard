@@ -5,11 +5,14 @@ use App\Support\DB;
 
 class SignatureEngine
 {
+    private static ?array $enabledSignaturesCache = null;
+
     public function enabledSignatures(): array
     {
+        if (self::$enabledSignaturesCache !== null) return self::$enabledSignaturesCache;
         $builtins = $this->builtinSignatures();
         try { $db = DB::select("SELECT * FROM malware_signatures WHERE enabled=1 AND source <> 'builtin' ORDER BY id"); } catch (\Throwable) { $db = []; }
-        return array_merge($builtins, $db);
+        return self::$enabledSignaturesCache = array_merge($builtins, $db);
     }
 
     public function builtinSignatures(): array

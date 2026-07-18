@@ -45,6 +45,7 @@ class DB
                 self::$pdo = new PDO('sqlite:' . $path, null, null, $options);
                 self::$pdo->exec('PRAGMA foreign_keys = ON');
                 self::$pdo->exec('PRAGMA journal_mode = WAL');
+                self::$pdo->exec('PRAGMA synchronous = NORMAL');
                 self::$pdo->exec('PRAGMA busy_timeout = 5000');
             }
         }

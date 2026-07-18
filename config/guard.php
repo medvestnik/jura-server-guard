@@ -1,5 +1,6 @@
 <?php
 return [
+    'default_locale' => env_value('JURA_DEFAULT_LOCALE', 'ru'),
     'scan_roots' => array_values(array_filter(array_map('trim', explode(',', (string) env_value('JURA_SCAN_ROOTS', '/var/www'))))),
     'site_pattern' => env_value('JURA_SITE_PATTERN', '/var/www/*/data/www/*'),
     'log_paths' => [

@@ -23,6 +23,8 @@ class ScannerService
     private int $lastDbProgressFiles = 0;
     private int $lastDbProgressAt = 0;
     private array $diffStats = ['files_seen_total'=>0,'files_new'=>0,'files_modified'=>0,'files_deleted'=>0,'files_changed_total'=>0,'files_analyzed'=>0,'files_skipped_unchanged'=>0];
+    private ?array $activeFindingPathHashes = null;
+    private ?array $highRiskFindingPathHashes = null;
     private array $signatureHitCounts = [];
     private array $noisySignatures = [];
     public function __construct(private ?RuleRepository $rules = null) { $this->rules ??= new RuleRepository(); }
@@ -33,6 +35,8 @@ class ScannerService
         $this->diffStats = ['files_seen_total'=>0,'files_new'=>0,'files_modified'=>0,'files_deleted'=>0,'files_changed_total'=>0,'files_analyzed'=>0,'files_skipped_unchanged'=>0];
         $this->signatureHitCounts = [];
         $this->noisySignatures = [];
+        $this->activeFindingPathHashes = null;
+        $this->highRiskFindingPathHashes = null;
         $scanMode = $this->scanMode($options);
         $previousRunId = $this->previousRunId($scopeType, $scopeValue);
         $pid = getmypid() ?: null;
@@ -390,20 +394,22 @@ class ScannerService
     private function snapshotMapNeedsMetadataBaseline(array $rows): bool { foreach ($rows as $r) { foreach (['ctime','mode','uid','gid','extension','file_category'] as $k) if (($r[$k] ?? null) === null || (string)($r[$k] ?? '') === '') return true; if ((int)($r['mode'] ?? 0) > 7777) return true; } return false; }
     private function manifestMetadataUnchanged(array $row, array $e): bool { foreach (['size','mtime','ctime','mode','uid','gid','extension','file_category'] as $k) if ((string)($row[$k] ?? '') !== (string)($e[$k] ?? '')) return false; return true; }
     private function metaFromManifestEntry(array $e, ?array $previous=null): array { return ['size'=>$e['size'],'mtime'=>$e['mtime'],'ctime'=>$e['ctime'],'inode'=>$previous['inode']??null,'mode'=>$e['mode'],'uid'=>$e['uid'],'gid'=>$e['gid'],'extension'=>$e['extension'],'file_category'=>$e['file_category'],'sha256'=>$previous['sha256']??null,'owner'=>$e['uid'],'group'=>$e['gid'],'permissions'=>$e['mode']]; }
-    private function changedOnlyForcedHashes(string $root, array $options): array { $h=[]; foreach (DB::select("SELECT path_hash FROM findings WHERE risk IN ('critical','high') AND status NOT IN ('ignored','quarantined','resolved')") as $r) $h[$r['path_hash']]=true; foreach ((array)($options['force_paths'] ?? []) as $p) $h[hash('sha256',$p)]=true; return $h; }
+    private function loadHighRiskFindingPathHashes(): array { $h=[]; foreach (DB::select("SELECT DISTINCT path_hash FROM findings WHERE risk IN ('critical','high') AND status NOT IN ('ignored','quarantined','resolved')") as $r) $h[$r['path_hash']]=true; return $h; }
+    private function loadActiveFindingPathHashes(): array { $h=[]; foreach (DB::select("SELECT DISTINCT path_hash FROM findings WHERE status NOT IN ('ignored','quarantined')") as $r) $h[$r['path_hash']]=true; return $h; }
+    private function changedOnlyForcedHashes(string $root, array $options): array { $h = $this->highRiskFindingPathHashes ??= $this->loadHighRiskFindingPathHashes(); foreach ((array)($options['force_paths'] ?? []) as $p) $h[hash('sha256',$p)]=true; return $h; }
     private function refreshSnapshotsFromManifest(int $siteId, int $runId, array $files, array $previousRows, array $currentByPathHash, array $deleted): void { foreach ($files as $e) { $prev=$previousRows[$e['path_hash']]??null; $m=$this->metaFromManifestEntry($e,$prev); $this->snapshot($siteId,$e['path'],$e['path_hash'],$e['relative_path'],$m,$prev); } foreach ($deleted as $r) DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,last_changed_scan_id=?,updated_at=? WHERE id=?', [now(),$runId,now(),$r['id']]); }
 
 
     private function deadlineAt(array $options): ?int { $max = (int)($options['max_seconds'] ?? 0); return $max > 0 ? time() + $max : null; }
     private function deadlineReached(array $options): bool { return !empty($options['deadline_at']) && time() >= (int)$options['deadline_at']; }
-    private function mustAnalyzeChangedOnly(string $path, string $root, string $rel, array $options = []): bool { if (!empty($options['force_paths']) && in_array($path, (array)$options['force_paths'], true)) return true; if ($this->newStructuralSuspiciousPath($path)) return true; return (bool)DB::first("SELECT id FROM findings WHERE path_hash=? AND risk IN ('critical','high') AND status NOT IN ('ignored','quarantined','resolved') LIMIT 1", [hash('sha256',$path)]); }
+    private function mustAnalyzeChangedOnly(string $path, string $root, string $rel, array $options = []): bool { if (!empty($options['force_paths']) && in_array($path, (array)$options['force_paths'], true)) return true; if ($this->newStructuralSuspiciousPath($path)) return true; return isset(($this->highRiskFindingPathHashes ??= $this->loadHighRiskFindingPathHashes())[hash('sha256',$path)]); }
     private function paranoidRecheckCandidate(string $path, string $rel): bool { return $this->isValidationPath($path) || $this->isRootCriticalFile($rel) || $this->isWebConfig($path) || $this->highRiskPath($path); }
     private function metadataUnchanged(array $row, array $m): bool { foreach (['size','mtime','ctime','mode','uid','gid'] as $k) if ((string)($row[$k] ?? '') !== (string)($m[$k] ?? '')) return false; if (!empty($row['inode']) && !empty($m['inode']) && (string)$row['inode'] !== (string)$m['inode']) return false; return true; }
     private function scanMode(array $options): string { $profile=$this->profile($options); if (!empty($options['full_rescan'])) return 'full'; if (!empty($options['changed_only'])) return 'changed_only'; if (!empty($options['diff'])) return 'differential'; return $profile === 'deep' ? 'full' : 'differential'; }
     private function previousRunId(string $scopeType, ?string $scopeValue): ?int { $sql = $scopeValue === null ? "SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND scope_type=? AND scope_value IS NULL ORDER BY id DESC LIMIT 1" : "SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND scope_type=? AND scope_value=? ORDER BY id DESC LIMIT 1"; $params = $scopeValue === null ? [$scopeType] : [$scopeType,$scopeValue]; $r=DB::first($sql, $params); return $r ? (int)$r['id'] : null; }
     private function accountDiff(string $change): void { $this->diffStats['files_seen_total']++; if ($change==='new') { $this->diffStats['files_new']++; $this->diffStats['files_changed_total']++; } elseif ($change==='changed') { $this->diffStats['files_modified']++; $this->diffStats['files_changed_total']++; } }
     private function fileCategory(string $path, string $rel): string { if ($this->isPhpLike($path)) return 'php'; if ($this->isWebConfig($path)) return 'config'; if ($this->isOrdinaryMedia($path)) return 'media'; return strtolower(pathinfo($path, PATHINFO_EXTENSION) ?: 'other'); }
-    private function heavyAnalysisCandidate(string $path, string $root, string $rel, array $m): bool { $base=basename($path); if ($this->isWebConfig($path) || preg_match('/^google.*\.html$/i',$base) || str_starts_with($base,'.')) return true; if ($this->suspiciousLocation($path) || $this->isValidationPath($path)) return true; if ($this->isPhpLike($path) && preg_match('#/(uploads|cache|tmp|media|images|storage)/#i',$path)) return true; if (preg_match('/\.(phar|phtml|shtml|cgi|pl|py|sh|asp|aspx)$/i',$path)) return true; if (DB::first("SELECT id FROM findings WHERE path_hash=? AND status NOT IN ('ignored','quarantined') LIMIT 1", [hash('sha256',$path)])) return true; return $this->structuralSuspiciousPath($path); }
+    private function heavyAnalysisCandidate(string $path, string $root, string $rel, array $m): bool { $base=basename($path); if ($this->isWebConfig($path) || preg_match('/^google.*\.html$/i',$base) || str_starts_with($base,'.')) return true; if ($this->suspiciousLocation($path) || $this->isValidationPath($path)) return true; if ($this->isPhpLike($path) && preg_match('#/(uploads|cache|tmp|media|images|storage)/#i',$path)) return true; if (preg_match('/\.(phar|phtml|shtml|cgi|pl|py|sh|asp|aspx)$/i',$path)) return true; if (isset(($this->activeFindingPathHashes ??= $this->loadActiveFindingPathHashes())[hash('sha256',$path)])) return true; return $this->structuralSuspiciousPath($path); }
     private function highRiskPath(string $path): bool { return (bool)preg_match('#/(wp-admin|wp-content|wp-includes|uploads|cache|tmp|media|images|storage)(/|$)#i', $path); }
     private function structuralSuspiciousPath(string $path): bool { return $this->newStructuralSuspiciousPath($path); }
     private function newStructuralSuspiciousPath(string $path): bool { return (bool)preg_match('#/(404SBG|configCWE|FSS-NPY)(/|$)|/\.txt404(/|$)|/(accesshash|admin-env)(/|$)|/(WHMCS|Joomla|Drupal|OpenCart|PrestaShop)/(?:404SBG|\.txt404|env|accesshash|admin-env)(/|$)#i', $path); }
@@ -517,7 +523,9 @@ class ScannerService
         if ($staticPhp) $matches[] = ['name'=>'static-html-in-php','risk'=>'high','pattern'=>'large static HTML content inside PHP file','snippet'=>basename($path)];
         return ['risk'=>$risk,'rule_key'=>'seo-doorway-gambling-spam','title'=>'SEO doorway / gambling spam page','description'=>'Static doorway content with gambling keywords and suspicious external SEO links/domains was detected.','matched'=>$matches];
     }
-    private function knownFalsePositivePath(string $path): bool { foreach ((require base_path('rules/default-rules.php'))['allowlist'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
+    private static ?array $defaultRulesCache = null;
+    private function defaultRulesConfig(): array { return self::$defaultRulesCache ??= require base_path('rules/default-rules.php'); }
+    private function knownFalsePositivePath(string $path): bool { foreach ($this->defaultRulesConfig()['allowlist'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
     private function selfReadingPackedLoaderEvidence(string $content): ?array
     {
         if ($content === '') return null;
@@ -615,9 +623,9 @@ class ScannerService
     }
     private function suspiciousContent(string $content): bool { return (bool)preg_match('/(eval\s*\(|assert\s*\(|gzinflate\s*\(|base64_decode\s*\(|shell_exec\s*\(|passthru\s*\(|proc_open\s*\()/i', $content); }
     private function malwareLikeName(string $path): bool { return (bool)preg_match('/\/(gallery888|zebra|mah|compat-kuro|AuthControlIer|access\.policy|session\.manage|field\.api|[a-f0-9]{12,})\.php$/i', $path); }
-    private function suspiciousLocation(string $path): bool { foreach ((require base_path('rules/default-rules.php'))['suspicious_paths'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
-    private function criticalChange(string $rel): bool { foreach ((require base_path('rules/default-rules.php'))['critical_changes'] as $p) if (fnmatch($p, $rel, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
-    private function importantChange(string $rel): bool { $r=require base_path('rules/default-rules.php'); foreach (array_merge($r['critical_changes'],$r['important_changes']) as $p) if (fnmatch($p, $rel, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
+    private function suspiciousLocation(string $path): bool { foreach ($this->defaultRulesConfig()['suspicious_paths'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
+    private function criticalChange(string $rel): bool { foreach ($this->defaultRulesConfig()['critical_changes'] as $p) if (fnmatch($p, $rel, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
+    private function importantChange(string $rel): bool { $r=$this->defaultRulesConfig(); foreach (array_merge($r['critical_changes'],$r['important_changes']) as $p) if (fnmatch($p, $rel, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
     private function maxRisk(array $rules): string { $order=['low'=>1,'medium'=>2,'high'=>3,'critical'=>4]; $risk='low'; foreach($rules as $r) if(($order[$r['risk']]??0)>($order[$risk]??0)) $risk=$r['risk']; return $risk; }
     private function raiseRisk(string $risk): string { return ['low'=>'medium','medium'=>'high','high'=>'critical','critical'=>'critical'][$risk] ?? 'high'; }
     private function relatedLogEventIds(string $path): array { $base = basename($path); if (!$base) return []; return array_map(fn($r)=>(int)$r['id'], DB::select("SELECT id FROM log_events WHERE uri LIKE ? AND NOT (LOWER(uri) LIKE '%delivery.png%' OR LOWER(uri) IN ('/delivery','/ua/delivery','/ru/delivery')) ORDER BY id DESC LIMIT 20", ['%'.$base.'%'])); }
