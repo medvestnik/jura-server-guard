@@ -367,6 +367,7 @@ return [
     'Excluded IPs recorded for reference (not added as threat IPs):' => 'IP-адреси, зафіксовані лише для довідки (не додані як загрози):',
     'Nothing was written. Upload the same file again with dry run unchecked to import for real.' => 'Нічого не записано. Завантажте той самий файл ще раз, знявши позначку dry run, щоб виконати реальний імпорт.',
     'Upload a jura-server-guard-incident JSON file. Threat IPs are upserted by ip, signatures by slug, file IOCs by sha256. Dry run previews the changes without writing anything.' => 'Завантажте JSON-файл формату jura-server-guard-incident. IP-адреси оновлюються за полем ip, сигнатури — за slug, файлові IOC — за sha256. Dry run показує попередній перегляд змін без запису в базу.',
+    'Only the incident data file itself (the .json with "format": "jura-server-guard-incident") is imported here. A companion JSON Schema file only describes the format and is not incident data; a companion Markdown report is for reading, not for uploading — neither will import.' => 'Сюди завантажується лише сам файл з даними інциденту (.json з полем "format": "jura-server-guard-incident"). Супровідна JSON Schema лише описує формат і не є даними інциденту; супровідний звіт у Markdown — для читання людиною, а не для завантаження — жоден з них не імпортується.',
     'Import rejected:' => 'Імпорт відхилено:',
     'Dry run (preview only, do not write anything)' => 'Dry run (лише попередній перегляд, нічого не записувати)',
     'Upload' => 'Завантажити',
