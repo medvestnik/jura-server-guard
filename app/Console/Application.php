@@ -242,6 +242,24 @@ class Application
             DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_iocs (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NULL, sha256 TEXT NOT NULL UNIQUE, size INTEGER NULL, names_json TEXT NULL, role TEXT NULL, risk TEXT NULL, confidence TEXT NULL, scope TEXT NULL, created_at TEXT, updated_at TEXT)");
         }
         $this->ensureColumn('malware_signatures', 'incident_id', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
+        $this->ensureIncidentLinkTables($driver);
+    }
+
+    private function ensureIncidentLinkTables(string $driver): void
+    {
+        // incident_id on threat_ips/malware_signatures/incident_file_iocs only tracks the most
+        // recently importing incident. The same IP, signature, or hash can legitimately belong to
+        // multiple incidents, so these join tables are the actual source of truth for "what belongs
+        // to this incident" on the incident detail page.
+        if ($driver === 'mysql') {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_threat_ip_links (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, incident_id BIGINT UNSIGNED NOT NULL, threat_ip_id BIGINT UNSIGNED NOT NULL, created_at DATETIME NULL, UNIQUE KEY uniq_incident_threat_ip(incident_id, threat_ip_id), INDEX incident_threat_ip_links_threat_ip_idx(threat_ip_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_signature_links (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, incident_id BIGINT UNSIGNED NOT NULL, signature_id BIGINT UNSIGNED NOT NULL, created_at DATETIME NULL, UNIQUE KEY uniq_incident_signature(incident_id, signature_id), INDEX incident_signature_links_signature_idx(signature_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_ioc_links (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, incident_id BIGINT UNSIGNED NOT NULL, file_ioc_id BIGINT UNSIGNED NOT NULL, created_at DATETIME NULL, UNIQUE KEY uniq_incident_file_ioc(incident_id, file_ioc_id), INDEX incident_file_ioc_links_ioc_idx(file_ioc_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        } else {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_threat_ip_links (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NOT NULL, threat_ip_id INTEGER NOT NULL, created_at TEXT, UNIQUE(incident_id, threat_ip_id))");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_signature_links (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NOT NULL, signature_id INTEGER NOT NULL, created_at TEXT, UNIQUE(incident_id, signature_id))");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_ioc_links (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NOT NULL, file_ioc_id INTEGER NOT NULL, created_at TEXT, UNIQUE(incident_id, file_ioc_id))");
+        }
     }
 
     private function ensureColumn(string $table, string $column, string $definition): void

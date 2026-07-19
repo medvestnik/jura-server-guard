@@ -156,9 +156,9 @@ if (preg_match('#^/findings/(\d+)$#',$path,$m)) {
 if (preg_match('#^/incidents/(\d+)$#',$path,$m)) {
     $incident = DB::first('SELECT * FROM incidents WHERE id=?', [(int)$m[1]]);
     if (!$incident) { echo view('dashboard.404'); exit; }
-    $threatIps = DB::select('SELECT * FROM threat_ips WHERE incident_id=? ORDER BY risk DESC, ip', [$incident['id']]);
-    $signatures = DB::select('SELECT * FROM malware_signatures WHERE incident_id=? ORDER BY enabled DESC, risk DESC, name', [$incident['id']]);
-    $fileIocs = DB::select('SELECT * FROM incident_file_iocs WHERE incident_id=? ORDER BY risk DESC, sha256', [$incident['id']]);
+    $threatIps = DB::select('SELECT t.* FROM threat_ips t JOIN incident_threat_ip_links l ON l.threat_ip_id=t.id WHERE l.incident_id=? ORDER BY t.risk DESC, t.ip', [$incident['id']]);
+    $signatures = DB::select('SELECT ms.* FROM malware_signatures ms JOIN incident_signature_links l ON l.signature_id=ms.id WHERE l.incident_id=? ORDER BY ms.enabled DESC, ms.risk DESC, ms.name', [$incident['id']]);
+    $fileIocs = DB::select('SELECT f.* FROM incident_file_iocs f JOIN incident_file_ioc_links l ON l.file_ioc_id=f.id WHERE l.incident_id=? ORDER BY f.risk DESC, f.sha256', [$incident['id']]);
     $hashes = array_values(array_unique(array_column($fileIocs, 'sha256')));
     $seenByHash = [];
     if ($hashes) {
@@ -203,7 +203,7 @@ $data = match ($path) {
  '/signatures' => ['signatures.index',(function(){ [$w,$p]=signature_filters(); return ['signatures'=>DB::select('SELECT * FROM malware_signatures '.$w.' ORDER BY enabled DESC,risk DESC,name',$p)]; })()],
  '/rules' => ['rules.index',['rules'=>DB::select('SELECT * FROM rules ORDER BY enabled DESC,risk DESC,name'),'allow'=>DB::select('SELECT * FROM allowlist_rules ORDER BY enabled DESC,name')]],
  '/threat-ips' => ['threat_ips.index',['ips'=>DB::select('SELECT * FROM threat_ips ORDER BY updated_at DESC'),'classifications'=>$threatIpClassifications,'prefillIp'=>$_GET['ip']??'']],
- '/incidents' => ['incidents.index',['incidents'=>DB::select("SELECT i.*, (SELECT COUNT(*) FROM threat_ips t WHERE t.incident_id=i.id) threat_ips_count, (SELECT COUNT(*) FROM malware_signatures ms WHERE ms.incident_id=i.id) signatures_count, (SELECT COUNT(*) FROM incident_file_iocs f WHERE f.incident_id=i.id) file_iocs_count FROM incidents i ORDER BY i.imported_at DESC")]],
+ '/incidents' => ['incidents.index',['incidents'=>DB::select("SELECT i.*, (SELECT COUNT(*) FROM incident_threat_ip_links l WHERE l.incident_id=i.id) threat_ips_count, (SELECT COUNT(*) FROM incident_signature_links l WHERE l.incident_id=i.id) signatures_count, (SELECT COUNT(*) FROM incident_file_ioc_links l WHERE l.incident_id=i.id) file_iocs_count FROM incidents i ORDER BY i.imported_at DESC")]],
  '/incidents/import' => ['incidents.import',['result'=>null,'error'=>null]],
  '/settings' => ['settings.index',['settings'=>DB::select('SELECT * FROM settings ORDER BY '.DB::quoteIdentifier('key'))]],
  '/backups' => ['backups.index',(function(){ $svc=new IspmanagerBackupService(); $path=$_GET['path']??''; $date=$_GET['date']??''; return ['service'=>$svc,'detect'=>$svc->detectTools(),'users'=>$svc->users(),'backups'=>$svc->backups($_GET['user']??null),'found'=>$path?$svc->findFile($path,$date?:null):[],'searchPath'=>$path,'date'=>$date,'preview'=>($path&&$date)?$svc->preview($path,$date):null,'diff'=>($path&&$date)?$svc->diff($path,$date):null]; })()],

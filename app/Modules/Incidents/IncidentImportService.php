@@ -2,6 +2,7 @@
 namespace App\Modules\Incidents;
 
 use App\Support\DB;
+use Throwable;
 
 class IncidentImportService
 {
@@ -22,6 +23,8 @@ class IncidentImportService
         foreach ((array)($data['malware_signatures'] ?? []) as $i => $sig) {
             if (empty($sig['slug'])) $errors[] = "malware_signatures[$i].slug is required";
             if (empty($sig['name'])) $errors[] = "malware_signatures[$i].name is required";
+            if (!in_array($sig['risk'] ?? '', ['low', 'medium', 'high', 'critical'], true)) $errors[] = "malware_signatures[$i].risk is invalid";
+            if (empty($sig['type']) || !is_string($sig['type'])) $errors[] = "malware_signatures[$i].type is required";
             if (!in_array($sig['pattern_type'] ?? '', ['hash', 'combo', 'regex', 'substring', 'structural'], true)) $errors[] = "malware_signatures[$i].pattern_type is invalid";
             if (!is_array($sig['pattern_json'] ?? null)) $errors[] = "malware_signatures[$i].pattern_json must be an object";
         }
@@ -60,20 +63,40 @@ class IncidentImportService
             return ['ok' => true, 'dry_run' => true, 'summary' => $summary];
         }
 
-        $incidentId = $this->upsertIncident($data, $sourceFile);
-        $source = 'incident:' . $extId;
+        $pdo = DB::pdo();
+        $pdo->beginTransaction();
+        try {
+            $incidentId = $this->upsertIncident($data, $sourceFile);
+            $source = 'incident:' . $extId;
 
-        foreach ((array) ($data['threat_ips'] ?? []) as $ip) {
-            $summary['threat_ips'][$this->upsertThreatIp($ip, $incidentId, $source) ? 'created' : 'updated']++;
-        }
-        foreach ((array) ($data['malware_signatures'] ?? []) as $sig) {
-            $summary['signatures'][$this->upsertSignature($sig, $incidentId) ? 'created' : 'updated']++;
-        }
-        foreach ((array) ($data['file_iocs'] ?? []) as $ioc) {
-            $summary['file_iocs'][$this->upsertFileIoc($ioc, $incidentId) ? 'created' : 'updated']++;
+            foreach ((array) ($data['threat_ips'] ?? []) as $ip) {
+                [$created, $threatIpId] = $this->upsertThreatIp($ip, $incidentId, $source);
+                $summary['threat_ips'][$created ? 'created' : 'updated']++;
+                $this->linkIncident('incident_threat_ip_links', 'threat_ip_id', $incidentId, $threatIpId);
+            }
+            foreach ((array) ($data['malware_signatures'] ?? []) as $sig) {
+                [$created, $signatureId] = $this->upsertSignature($sig, $incidentId);
+                $summary['signatures'][$created ? 'created' : 'updated']++;
+                $this->linkIncident('incident_signature_links', 'signature_id', $incidentId, $signatureId);
+            }
+            foreach ((array) ($data['file_iocs'] ?? []) as $ioc) {
+                [$created, $fileIocId] = $this->upsertFileIoc($ioc, $incidentId);
+                $summary['file_iocs'][$created ? 'created' : 'updated']++;
+                $this->linkIncident('incident_file_ioc_links', 'file_ioc_id', $incidentId, $fileIocId);
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            return ['ok' => false, 'errors' => ['Import failed and was rolled back: ' . $e->getMessage()]];
         }
         $summary['incident_id'] = $incidentId;
         return ['ok' => true, 'dry_run' => false, 'summary' => $summary];
+    }
+
+    private function linkIncident(string $table, string $foreignKeyColumn, int $incidentId, int $foreignId): void
+    {
+        if (DB::first("SELECT id FROM $table WHERE incident_id=? AND $foreignKeyColumn=?", [$incidentId, $foreignId])) return;
+        DB::insert("INSERT INTO $table (incident_id, $foreignKeyColumn, created_at) VALUES (?,?,?)", [$incidentId, $foreignId, now()]);
     }
 
     private function upsertIncident(array $data, ?string $sourceFile): int
@@ -105,19 +128,21 @@ class IncidentImportService
         return DB::insert('INSERT INTO incidents (external_id,title,severity,confidence,status,summary,server_hostname,timeline_json,affected_assets_json,path_indicators_json,excluded_ips_json,response_actions_json,import_policy_json,raw_json,source_file,imported_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$extId, ...$fields, now(), now()]);
     }
 
-    private function upsertThreatIp(array $ip, int $incidentId, string $source): bool
+    /** @return array{0:bool,1:int} [created, threat_ip_id] */
+    private function upsertThreatIp(array $ip, int $incidentId, string $source): array
     {
-        $existing = DB::first('SELECT id FROM threat_ips WHERE ip=?', [$ip['ip']]);
-        $fields = [$ip['classification'], $ip['risk'], $ip['confidence'] ?? null, $ip['notes'] ?? null, (int) ($ip['hit_count'] ?? 0), $ip['recommended_action'] ?? null, $incidentId, $source];
+        $existing = DB::first('SELECT id, hit_count FROM threat_ips WHERE ip=?', [$ip['ip']]);
+        $hitCount = isset($ip['hit_count']) ? (int) $ip['hit_count'] : (int) ($existing['hit_count'] ?? 0);
+        $fields = [$ip['classification'], $ip['risk'], $ip['confidence'] ?? null, $ip['notes'] ?? null, $hitCount, $ip['recommended_action'] ?? null, $incidentId, $source];
         if ($existing) {
             DB::statement('UPDATE threat_ips SET classification=?,risk=?,confidence=?,notes=?,hit_count=?,recommended_action=?,incident_id=?,source=?,last_seen_at=?,updated_at=? WHERE id=?', [...$fields, now(), now(), $existing['id']]);
-            return false;
+            return [false, (int) $existing['id']];
         }
-        DB::insert('INSERT INTO threat_ips (ip,classification,risk,confidence,notes,hit_count,recommended_action,incident_id,source,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', [$ip['ip'], ...$fields, now(), now(), now(), now()]);
-        return true;
+        return [true, DB::insert('INSERT INTO threat_ips (ip,classification,risk,confidence,notes,hit_count,recommended_action,incident_id,source,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', [$ip['ip'], ...$fields, now(), now(), now(), now()])];
     }
 
-    private function upsertSignature(array $sig, int $incidentId): bool
+    /** @return array{0:bool,1:int} [created, signature_id] */
+    private function upsertSignature(array $sig, int $incidentId): array
     {
         $existing = DB::first('SELECT id FROM malware_signatures WHERE slug=?', [$sig['slug']]);
         $fields = [
@@ -136,22 +161,21 @@ class IncidentImportService
         ];
         if ($existing) {
             DB::statement('UPDATE malware_signatures SET name=?,description=?,risk=?,type=?,pattern_type=?,pattern_json=?,target_extensions=?,target_paths=?,exclude_paths=?,required_hits=?,enabled=?,incident_id=?,source=?,updated_at=? WHERE id=?', [...$fields, 'incident', now(), $existing['id']]);
-            return false;
+            return [false, (int) $existing['id']];
         }
-        DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,target_paths,exclude_paths,required_hits,enabled,incident_id,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$fields[0], $sig['slug'], $fields[1], $fields[2], $fields[3], $fields[4], $fields[5], $fields[6], $fields[7], $fields[8], $fields[9], $fields[10], $fields[11], 'incident', now(), now()]);
-        return true;
+        return [true, DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,target_paths,exclude_paths,required_hits,enabled,incident_id,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$fields[0], $sig['slug'], $fields[1], $fields[2], $fields[3], $fields[4], $fields[5], $fields[6], $fields[7], $fields[8], $fields[9], $fields[10], $fields[11], 'incident', now(), now()])];
     }
 
-    private function upsertFileIoc(array $ioc, int $incidentId): bool
+    /** @return array{0:bool,1:int} [created, file_ioc_id] */
+    private function upsertFileIoc(array $ioc, int $incidentId): array
     {
         $sha = strtolower($ioc['sha256']);
         $existing = DB::first('SELECT id FROM incident_file_iocs WHERE sha256=?', [$sha]);
         $fields = [$incidentId, isset($ioc['size']) ? (int) $ioc['size'] : null, json_encode($ioc['names'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), $ioc['role'] ?? null, $ioc['risk'] ?? null, $ioc['confidence'] ?? null, $ioc['scope'] ?? null];
         if ($existing) {
             DB::statement('UPDATE incident_file_iocs SET incident_id=?,size=?,names_json=?,role=?,risk=?,confidence=?,scope=?,updated_at=? WHERE id=?', [...$fields, now(), $existing['id']]);
-            return false;
+            return [false, (int) $existing['id']];
         }
-        DB::insert('INSERT INTO incident_file_iocs (incident_id,size,names_json,role,risk,confidence,scope,sha256,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)', [...$fields, $sha, now(), now()]);
-        return true;
+        return [true, DB::insert('INSERT INTO incident_file_iocs (incident_id,size,names_json,role,risk,confidence,scope,sha256,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)', [...$fields, $sha, now(), now()])];
     }
 }
