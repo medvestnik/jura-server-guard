@@ -176,6 +176,43 @@ The same lookup is available from the CLI:
 php artisan guard:find-hash <sha256>
 ```
 
+### Auto-created signatures from critical findings
+
+Every time a scan records a new **critical**-risk finding that wasn't already matched by an
+existing signature, the panel automatically writes a `hash` signature for that file's
+SHA-256 into `malware_signatures` (named `Auto: <filename>`, `source = auto_finding`,
+linked back to the finding via `source_finding_id`). Future scans then flag byte-identical
+copies of that file anywhere on the server immediately, without waiting for anyone to
+manually turn the finding into a signature. Creation is deduplicated by SHA-256 (repeated
+scans of the same file never create duplicate signatures) and can be disabled with
+`JURA_AUTO_SIGNATURE_ON_CRITICAL_FINDINGS=false` in `.env`.
+
+### Analyzing an uploaded file or pasted content
+
+The **Signatures → Analyze file** page (`/signatures/analyze`) lets you check a suspicious
+file against every enabled signature without waiting for the next scan: upload a file
+(up to 5 MB) or paste its content directly, and the panel computes its SHA-256, reports any
+matching signatures (with a link to each), and shows whether the same SHA-256 has already
+been seen anywhere on the server via `file_snapshots`. If nothing matches, a
+**Create signature from this file** button pre-fills a `hash` signature the same way the
+finding page does.
+
+## Global search
+
+The **Search** box in the top navigation (`/search`) looks a query up across the whole
+panel at once: scanned files, findings, quarantine items, suspicious log lines, signatures,
+incidents, and incident file IOCs. The query is interpreted automatically:
+
+- a 64-character hex string is treated as an exact SHA-256 and matched against file
+  hashes, findings, quarantine items, signature patterns, and incident file IOCs;
+- an IPv4 address is matched against the threat IP database, trusted IP list, and
+  suspicious log entries;
+- anything else is matched as a substring against file paths, finding titles, signature
+  names/descriptions/patterns, and incident titles/summaries.
+
+This answers questions like "where else has `filefuns.php` shown up" or "is this hash
+already known as a signature" in one search instead of checking each section by hand.
+
 ## Threat IPs
 
 The **Threat IPs** panel page is a manually curated list of attacker IP addresses, each

@@ -656,7 +656,36 @@ class ScannerService
         $row = DB::first("SELECT id,status FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status NOT IN ('ignored','quarantined')", [$findingHash,$pathHash,$path]);
         $logIds = json_encode($f['log_ids'] ?? [], JSON_UNESCAPED_SLASHES);
         if ($row) DB::statement('UPDATE findings SET site_id=?,path_hash=?,finding_hash=?,risk=?,rule_key=?,title=?,description=?,matched_rules=?,related_log_event_ids=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,last_seen_scan_id=?,last_matched_signature_id=?,matched_signature_name=?,matched_signature_source=?,signature_match_details=?,updated_at=? WHERE id=?', [$siteId,$pathHash,$findingHash,$f['risk'],$f['rule_key'] ?? null,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),$runId,$sigId,$sigName,$sigSource,$matchDetails,now(),$row['id']]);
-        else DB::insert('INSERT INTO findings (scan_run_id,first_seen_scan_id,last_seen_scan_id,last_matched_signature_id,matched_signature_name,matched_signature_source,signature_match_details,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$runId,$runId,$runId,$sigId,$sigName,$sigSource,$matchDetails,$siteId,$path,$pathHash,$findingHash,$f['risk'],'new',$f['type'],$f['rule_key'] ?? null,$fingerprint,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),now(),now()]);
+        else {
+            $findingId = DB::insert('INSERT INTO findings (scan_run_id,first_seen_scan_id,last_seen_scan_id,last_matched_signature_id,matched_signature_name,matched_signature_source,signature_match_details,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$runId,$runId,$runId,$sigId,$sigName,$sigSource,$matchDetails,$siteId,$path,$pathHash,$findingHash,$f['risk'],'new',$f['type'],$f['rule_key'] ?? null,$fingerprint,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),now(),now()]);
+            $this->maybeAutoCreateSignature($findingId, $path, $f, $m, $sig !== null);
+        }
+    }
+
+    private function maybeAutoCreateSignature(int $findingId, string $path, array $f, array $m, bool $alreadyFromSignature): void
+    {
+        if (!config('guard.auto_signature_on_critical_findings')) return;
+        if (($f['risk'] ?? '') !== 'critical') return;
+        if ($alreadyFromSignature) return; // already matched a known signature; nothing new to learn
+        $sha = $m['sha256'] ?? null;
+        if (!$sha) return;
+        $slug = 'auto-' . substr($sha, 0, 16);
+        if (DB::first('SELECT id FROM malware_signatures WHERE slug=?', [$slug])) return;
+        DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,enabled,source,source_finding_id,source_file_sha256,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?)', [
+            'Auto: ' . basename($path),
+            $slug,
+            'Automatically created from finding #' . $findingId . ' (' . ($f['title'] ?? '') . ') during a scan.',
+            'critical',
+            $f['type'] ?? 'suspicious_php',
+            'hash',
+            json_encode(['sha256' => [$sha]], JSON_UNESCAPED_SLASHES),
+            '[]',
+            'auto_finding',
+            $findingId,
+            $sha,
+            now(),
+            now(),
+        ]);
     }
 
 
