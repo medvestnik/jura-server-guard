@@ -372,4 +372,18 @@ return [
     'Upload' => 'Загрузить',
     'create' => 'создание',
     'update' => 'обновление',
+
+    // Trusted IPs and Telegram alerts
+    'Trusted IPs' => 'Доверенные IP',
+    'IP addresses known to be safe (admins, deploy tools, trusted maintainers). Used to reduce alert noise: a new file appearing in a site web root from a trusted IP will not trigger a notification.' => 'IP-адреса, о которых известно, что они безопасны (администраторы, инструменты деплоя, доверенные разработчики). Используются для снижения количества ложных тревог: новый файл в корне сайта с доверенного IP не вызовет уведомление.',
+    'Label' => 'Метка',
+    'Label (e.g. office VPN, developer)' => 'Метка (например, офисный VPN, разработчик)',
+    'Added' => 'Добавлено',
+    'Remove this IP from the trusted list?' => 'Убрать этот IP из доверенных?',
+    'Telegram alerts' => 'Уведомления в Telegram',
+    'Configured via JURA_TELEGRAM_ENABLED / JURA_TELEGRAM_BOT_TOKEN / JURA_TELEGRAM_CHAT_ID in .env (not editable here — see README). New critical/high findings, new web-root files from untrusted IPs, and new cron jobs are sent here after each scan.' => 'Настраивается через JURA_TELEGRAM_ENABLED / JURA_TELEGRAM_BOT_TOKEN / JURA_TELEGRAM_CHAT_ID в .env (здесь не редактируется — см. README). Сюда после каждой проверки приходят новые находки critical/high, новые файлы в корне сайта с недоверенных IP и новые cron-задания.',
+    'Test message sent.' => 'Тестовое сообщение отправлено.',
+    'Test failed:' => 'Ошибка отправки:',
+    'Send test message' => 'Отправить тестовое сообщение',
+    'Manage trusted IPs' => 'Управление доверенными IP',
 ];

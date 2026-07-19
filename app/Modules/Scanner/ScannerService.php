@@ -1,8 +1,10 @@
 <?php
 namespace App\Modules\Scanner;
 
+use App\Modules\CronMonitor\CronMonitorService;
 use App\Modules\Inventory\InventoryService;
 use App\Modules\LogAnalyzer\LogAnalyzerService;
+use App\Modules\Notifications\AlertService;
 use App\Modules\Rules\RuleRepository;
 use App\Support\DB;
 use App\Support\ScanLock;
@@ -85,6 +87,14 @@ class ScannerService
             $msg = $this->limitReached ? 'Scan stopped by max seconds or max files' : 'Scan completed';
             $this->progress($options, $msg);
             $this->progress($options, "Scan #$runId $status: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories} files_seen_total={$this->diffStats['files_seen_total']} files_new={$this->diffStats['files_new']} files_modified={$this->diffStats['files_modified']} files_deleted={$this->diffStats['files_deleted']} files_analyzed={$this->diffStats['files_analyzed']} files_skipped_unchanged={$this->diffStats['files_skipped_unchanged']} scan_mode=$scanMode noisy_signatures=".json_encode($this->noisySignatures, JSON_UNESCAPED_SLASHES));
+            if (empty($options['dry_run'])) {
+                try {
+                    (new AlertService())->runPostScanChecks($runId);
+                    if (config('guard.cron_monitor_enabled')) (new AlertService())->runCronCheck();
+                } catch (Throwable $e) {
+                    $this->progress($options, 'Alert/cron check failed: ' . $e->getMessage());
+                }
+            }
             return $runId;
         } catch (Throwable $e) {
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', ['failed', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $e->getMessage(), now(), 'Scan failed', now(), $runId]);

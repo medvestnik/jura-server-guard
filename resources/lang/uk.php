@@ -372,4 +372,18 @@ return [
     'Upload' => 'Завантажити',
     'create' => 'створення',
     'update' => 'оновлення',
+
+    // Trusted IPs and Telegram alerts
+    'Trusted IPs' => 'Довірені IP',
+    'IP addresses known to be safe (admins, deploy tools, trusted maintainers). Used to reduce alert noise: a new file appearing in a site web root from a trusted IP will not trigger a notification.' => 'IP-адреси, про які відомо, що вони безпечні (адміністратори, інструменти деплою, довірені розробники). Використовуються для зменшення кількості хибних тривог: новий файл у корені сайту з довіреного IP не викличе сповіщення.',
+    'Label' => 'Мітка',
+    'Label (e.g. office VPN, developer)' => 'Мітка (наприклад, офісний VPN, розробник)',
+    'Added' => 'Додано',
+    'Remove this IP from the trusted list?' => 'Прибрати цей IP з довірених?',
+    'Telegram alerts' => 'Сповіщення в Telegram',
+    'Configured via JURA_TELEGRAM_ENABLED / JURA_TELEGRAM_BOT_TOKEN / JURA_TELEGRAM_CHAT_ID in .env (not editable here — see README). New critical/high findings, new web-root files from untrusted IPs, and new cron jobs are sent here after each scan.' => 'Налаштовується через JURA_TELEGRAM_ENABLED / JURA_TELEGRAM_BOT_TOKEN / JURA_TELEGRAM_CHAT_ID у .env (тут не редагується — див. README). Сюди після кожної перевірки надходять нові знахідки critical/high, нові файли в корені сайту з недовірених IP і нові cron-завдання.',
+    'Test message sent.' => 'Тестове повідомлення надіслано.',
+    'Test failed:' => 'Помилка надсилання:',
+    'Send test message' => 'Надіслати тестове повідомлення',
+    'Manage trusted IPs' => 'Керування довіреними IP',
 ];

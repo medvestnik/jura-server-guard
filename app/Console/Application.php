@@ -4,6 +4,8 @@ namespace App\Console;
 use App\Modules\Backups\IspmanagerBackupService;
 use App\Modules\Incidents\IncidentImportService;
 use App\Modules\LogAnalyzer\LogAnalyzerService;
+use App\Modules\Notifications\AlertService;
+use App\Modules\Notifications\TelegramNotifier;
 use App\Modules\Quarantine\QuarantineService;
 use App\Modules\Rules\RuleRepository;
 use App\Modules\Scanner\ScannerService;
@@ -25,12 +27,14 @@ class Application
                 'guard:sites' => $this->sites(), 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:status' => $this->status(),
                 'guard:ip-list' => $this->ipList(), 'guard:ip-add' => $this->ipAdd($argv), 'guard:ip-remove' => $this->ipRemove($argv), 'guard:find-hash' => $this->findHash($argv),
                 'guard:incident-import' => $this->incidentImport($argv), 'guard:incident-list' => $this->incidentList(),
+                'guard:trust-ip' => $this->trustIp($argv), 'guard:untrust-ip' => $this->untrustIp($argv), 'guard:trusted-ips' => $this->trustedIpsList(),
+                'guard:cron-scan' => $this->cronScan(), 'guard:telegram-test' => $this->telegramTest($argv),
                 'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
             };
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
     }
 
-    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  guard:incident-import {path.json} [--dry-run]\n  guard:incident-list\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
+    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  guard:incident-import {path.json} [--dry-run]\n  guard:incident-list\n  guard:trust-ip {ip} [--label=TEXT] [--notes=TEXT]\n  guard:untrust-ip {ip}\n  guard:trusted-ips\n  guard:cron-scan\n  guard:telegram-test [--message=TEXT]\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
     private function noop(string $cmd): int { if ($cmd==='key:generate') $this->ensureKey(); echo "$cmd complete.\n"; return 0; }
     private function ensureKey(): void { $env=base_path('.env'); if (!is_file($env) && is_file(base_path('.env.example'))) copy(base_path('.env.example'), $env); if (is_file($env)) { $c=file_get_contents($env); if (preg_match('/^APP_KEY=\s*$/m',$c)) file_put_contents($env,preg_replace('/^APP_KEY=\s*$/m','APP_KEY=base64:'.base64_encode(random_bytes(32)),$c)); } }
 
@@ -243,6 +247,27 @@ class Application
         }
         $this->ensureColumn('malware_signatures', 'incident_id', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
         $this->ensureIncidentLinkTables($driver);
+        $this->ensureTrustedIpsTable($driver);
+        $this->ensureCronMonitorTable($driver);
+        $this->ensureNotificationsTable($driver);
+    }
+
+    private function ensureTrustedIpsTable(string $driver): void
+    {
+        if ($driver === 'mysql') DB::pdo()->exec("CREATE TABLE IF NOT EXISTS trusted_ips (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, ip VARCHAR(64) NOT NULL, label VARCHAR(255) NULL, notes TEXT NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_trusted_ips_ip(ip)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        else DB::pdo()->exec("CREATE TABLE IF NOT EXISTS trusted_ips (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT NOT NULL UNIQUE, label TEXT NULL, notes TEXT NULL, created_at TEXT, updated_at TEXT)");
+    }
+
+    private function ensureCronMonitorTable(string $driver): void
+    {
+        if ($driver === 'mysql') DB::pdo()->exec("CREATE TABLE IF NOT EXISTS cron_snapshots (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id BIGINT UNSIGNED NULL, server_user VARCHAR(255) NOT NULL, line TEXT NOT NULL, line_hash CHAR(64) NOT NULL, is_missing TINYINT(1) NOT NULL DEFAULT 0, first_seen_at DATETIME NULL, last_seen_at DATETIME NULL, notified_at DATETIME NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_cron_snapshots_user_line(server_user, line_hash), INDEX cron_snapshots_user_id_idx(user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        else DB::pdo()->exec("CREATE TABLE IF NOT EXISTS cron_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NULL, server_user TEXT NOT NULL, line TEXT NOT NULL, line_hash TEXT NOT NULL, is_missing INTEGER NOT NULL DEFAULT 0, first_seen_at TEXT NULL, last_seen_at TEXT NULL, notified_at TEXT NULL, created_at TEXT, updated_at TEXT, UNIQUE(server_user, line_hash))");
+    }
+
+    private function ensureNotificationsTable(string $driver): void
+    {
+        if ($driver === 'mysql') DB::pdo()->exec("CREATE TABLE IF NOT EXISTS notifications_log (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, channel VARCHAR(32) NOT NULL DEFAULT 'telegram', category VARCHAR(64) NOT NULL, message TEXT NOT NULL, related_type VARCHAR(64) NULL, related_id BIGINT NULL, status VARCHAR(32) NOT NULL DEFAULT 'sent', error_text TEXT NULL, created_at DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        else DB::pdo()->exec("CREATE TABLE IF NOT EXISTS notifications_log (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL DEFAULT 'telegram', category TEXT NOT NULL, message TEXT NOT NULL, related_type TEXT NULL, related_id INTEGER NULL, status TEXT NOT NULL DEFAULT 'sent', error_text TEXT NULL, created_at TEXT)");
     }
 
     private function ensureIncidentLinkTables(string $driver): void
@@ -445,5 +470,39 @@ class Application
             echo "{$r['id']}\t{$r['external_id']}\t{$r['severity']}\t".($r['status'] ?? '')."\t{$r['title']}\t{$r['imported_at']}\n";
         }
         return 0;
+    }
+
+    private function trustIp(array $argv): int {
+        $ip = trim((string)($argv[2] ?? '')); if ($ip === '') throw new \InvalidArgumentException('ip is required.');
+        $label = $this->optionString($argv, '--label') ?? '';
+        $notes = $this->optionString($argv, '--notes') ?? '';
+        $existing = DB::first('SELECT id FROM trusted_ips WHERE ip=?', [$ip]);
+        if ($existing) DB::statement('UPDATE trusted_ips SET label=?,notes=?,updated_at=? WHERE id=?', [$label,$notes,now(),$existing['id']]);
+        else DB::insert('INSERT INTO trusted_ips (ip,label,notes,created_at,updated_at) VALUES (?,?,?,?,?)', [$ip,$label,$notes,now(),now()]);
+        echo "Trusted IP $ip saved.\n";
+        return 0;
+    }
+    private function untrustIp(array $argv): int { $ip = trim((string)($argv[2] ?? '')); if ($ip === '') throw new \InvalidArgumentException('ip is required.'); DB::statement('DELETE FROM trusted_ips WHERE ip=?', [$ip]); echo "Removed $ip from trusted IPs.\n"; return 0; }
+    private function trustedIpsList(): int {
+        echo "ip\tlabel\tnotes\tcreated_at\n";
+        foreach (DB::select('SELECT * FROM trusted_ips ORDER BY ip') as $r) echo "{$r['ip']}\t".($r['label']??'')."\t".str_replace(["\t","\n"],' ',(string)$r['notes'])."\t{$r['created_at']}\n";
+        return 0;
+    }
+
+    private function cronScan(): int {
+        $new = (new AlertService())->runCronCheck();
+        echo "Cron scan complete. New entries: " . count($new) . "\n";
+        foreach ($new as $entry) echo "  [{$entry['server_user']}] {$entry['line']}\n";
+        return 0;
+    }
+
+    private function telegramTest(array $argv): int {
+        $notifier = new TelegramNotifier();
+        if (!$notifier->enabled()) { fwrite(STDERR, "Telegram is disabled or not fully configured (JURA_TELEGRAM_ENABLED/JURA_TELEGRAM_BOT_TOKEN/JURA_TELEGRAM_CHAT_ID).\n"); return 1; }
+        $message = $this->optionString($argv, '--message') ?? 'Jura Server Guard: test notification.';
+        $result = $notifier->send($message);
+        if ($result['ok']) { echo "Sent.\n"; return 0; }
+        fwrite(STDERR, "Failed: {$result['error']}\n");
+        return 1;
     }
 }

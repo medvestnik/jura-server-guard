@@ -116,6 +116,22 @@ if ($path === '/threat-ips/save' && $method === 'POST') {
     redirect('/threat-ips');
 }
 if ($path === '/threat-ips/delete' && $method === 'POST') { DB::statement('DELETE FROM threat_ips WHERE id=?', [(int)$_POST['id']]); redirect('/threat-ips'); }
+if ($path === '/trusted-ips/save' && $method === 'POST') {
+    $ip = trim((string)($_POST['ip'] ?? ''));
+    if ($ip !== '') {
+        $label = (string)($_POST['label'] ?? ''); $notes = (string)($_POST['notes'] ?? '');
+        $existing = DB::first('SELECT id FROM trusted_ips WHERE ip=?', [$ip]);
+        if ($existing) DB::statement('UPDATE trusted_ips SET label=?,notes=?,updated_at=? WHERE id=?', [$label,$notes,now(),$existing['id']]);
+        else DB::insert('INSERT INTO trusted_ips (ip,label,notes,created_at,updated_at) VALUES (?,?,?,?,?)', [$ip,$label,$notes,now(),now()]);
+    }
+    redirect('/trusted-ips');
+}
+if ($path === '/trusted-ips/delete' && $method === 'POST') { DB::statement('DELETE FROM trusted_ips WHERE id=?', [(int)$_POST['id']]); redirect('/trusted-ips'); }
+if ($path === '/settings/telegram-test' && $method === 'POST') {
+    $result = (new \App\Modules\Notifications\TelegramNotifier())->send((string)($_POST['message'] ?? 'Jura Server Guard: test notification.'));
+    $_SESSION['telegram_test_result'] = $result;
+    redirect('/settings');
+}
 if ($path === '/incidents/import' && $method === 'POST') {
     $dryRun = ($_POST['dry_run'] ?? '1') === '1';
     $upload = $_FILES['file'] ?? null;
@@ -203,9 +219,10 @@ $data = match ($path) {
  '/signatures' => ['signatures.index',(function(){ [$w,$p]=signature_filters(); return ['signatures'=>DB::select('SELECT * FROM malware_signatures '.$w.' ORDER BY enabled DESC,risk DESC,name',$p)]; })()],
  '/rules' => ['rules.index',['rules'=>DB::select('SELECT * FROM rules ORDER BY enabled DESC,risk DESC,name'),'allow'=>DB::select('SELECT * FROM allowlist_rules ORDER BY enabled DESC,name')]],
  '/threat-ips' => ['threat_ips.index',['ips'=>DB::select('SELECT * FROM threat_ips ORDER BY updated_at DESC'),'classifications'=>$threatIpClassifications,'prefillIp'=>$_GET['ip']??'']],
+ '/trusted-ips' => ['trusted_ips.index',['ips'=>DB::select('SELECT * FROM trusted_ips ORDER BY updated_at DESC')]],
  '/incidents' => ['incidents.index',['incidents'=>DB::select("SELECT i.*, (SELECT COUNT(*) FROM incident_threat_ip_links l WHERE l.incident_id=i.id) threat_ips_count, (SELECT COUNT(*) FROM incident_signature_links l WHERE l.incident_id=i.id) signatures_count, (SELECT COUNT(*) FROM incident_file_ioc_links l WHERE l.incident_id=i.id) file_iocs_count FROM incidents i ORDER BY i.imported_at DESC")]],
  '/incidents/import' => ['incidents.import',['result'=>null,'error'=>null]],
- '/settings' => ['settings.index',['settings'=>DB::select('SELECT * FROM settings ORDER BY '.DB::quoteIdentifier('key'))]],
+ '/settings' => ['settings.index',['settings'=>DB::select('SELECT * FROM settings ORDER BY '.DB::quoteIdentifier('key')),'telegramTestResult'=>(function(){ $r=$_SESSION['telegram_test_result']??null; unset($_SESSION['telegram_test_result']); return $r; })()]],
  '/backups' => ['backups.index',(function(){ $svc=new IspmanagerBackupService(); $path=$_GET['path']??''; $date=$_GET['date']??''; return ['service'=>$svc,'detect'=>$svc->detectTools(),'users'=>$svc->users(),'backups'=>$svc->backups($_GET['user']??null),'found'=>$path?$svc->findFile($path,$date?:null):[],'searchPath'=>$path,'date'=>$date,'preview'=>($path&&$date)?$svc->preview($path,$date):null,'diff'=>($path&&$date)?$svc->diff($path,$date):null]; })()],
  default => ['dashboard.404', []],
 };

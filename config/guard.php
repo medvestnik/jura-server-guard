@@ -43,4 +43,11 @@ return [
     'backup_browser_enabled' => bool_env('JURA_BACKUP_BROWSER_ENABLED', true),
     'backup_restore_enabled' => bool_env('JURA_BACKUP_RESTORE_ENABLED', false),
     'restore_current_file_to_quarantine' => bool_env('JURA_RESTORE_CURRENT_FILE_TO_QUARANTINE', true),
+    'telegram_enabled' => bool_env('JURA_TELEGRAM_ENABLED', false),
+    'telegram_bot_token' => env_value('JURA_TELEGRAM_BOT_TOKEN', ''),
+    'telegram_chat_id' => env_value('JURA_TELEGRAM_CHAT_ID', ''),
+    'notify_new_critical_high_findings' => bool_env('JURA_NOTIFY_NEW_CRITICAL_HIGH_FINDINGS', true),
+    'notify_untrusted_webroot_files' => bool_env('JURA_NOTIFY_UNTRUSTED_WEBROOT_FILES', true),
+    'notify_cron_changes' => bool_env('JURA_NOTIFY_CRON_CHANGES', true),
+    'cron_monitor_enabled' => bool_env('JURA_CRON_MONITOR_ENABLED', true),
 ];
