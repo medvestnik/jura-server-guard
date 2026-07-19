@@ -1,7 +1,7 @@
 <?php
 function utc_timestamp(string $timestamp): int { return strtotime($timestamp . ' UTC') ?: strtotime($timestamp) ?: time(); }
 require dirname(__DIR__).'/vendor/autoload.php';
-use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService;
+use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService;
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 try { DB::pdo(); } catch (Throwable $e) { echo 'Database not initialized. Run php artisan migrate.'; exit; }
@@ -162,6 +162,44 @@ if ($path === '/settings' && $method==='POST') { $keyCol=DB::quoteIdentifier('ke
 if ($path === '/findings/export.csv') { [$w,$p]=finding_filters(); send_csv('findings.csv', DB::select("SELECT f.id,f.risk,f.status,f.type,u.name user_name,s.name site_name,f.path,f.title,f.sha256,f.first_seen_at,f.last_seen_at FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY f.id DESC LIMIT 50000", $p)); }
 if ($path === '/logs/export.csv') { [$w,$p]=log_filters(); send_csv('log_events.csv', DB::select("SELECT l.id,l.risk,l.event_type,u.name user_name,s.name site_name,l.ip,l.method,l.uri,l.status_code,l.user_agent,l.referer,l.created_at FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY l.id DESC LIMIT 50000", $p)); }
 if ($path === '/signatures/create') { echo view('signatures.form',['signature'=>null]); exit; }
+if ($path === '/signatures/create-from-hash') {
+    $sha = strtolower(trim((string)($_GET['sha256'] ?? '')));
+    $filename = trim((string)($_GET['filename'] ?? ''));
+    if (!preg_match('/^[a-f0-9]{64}$/', $sha)) redirect('/signatures/analyze');
+    echo view('signatures.form', ['signature' => ['name' => 'Signature for ' . $filename, 'slug' => 'file-' . substr($sha, 0, 16), 'risk' => 'critical', 'type' => 'webshell', 'pattern_type' => 'hash', 'pattern_json' => json_encode(['sha256' => [$sha]]), 'description' => 'Created from uploaded file analysis: ' . $filename], 'preview' => '']);
+    exit;
+}
+if ($path === '/signatures/analyze') {
+    $analyzeResult = null; $analyzeError = null;
+    if ($method === 'POST') {
+        $filename = trim((string)($_POST['filename'] ?? ''));
+        $content = null;
+        $upload = $_FILES['file'] ?? null;
+        if ($upload && ($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
+            if ($upload['size'] > 5 * 1024 * 1024) $analyzeError = 'File too large (max 5 MB).';
+            else { $content = file_get_contents($upload['tmp_name']); if ($filename === '') $filename = $upload['name']; }
+        } elseif (trim((string)($_POST['content'] ?? '')) !== '') {
+            $content = (string) $_POST['content'];
+        } else {
+            $analyzeError = 'Upload a file or paste its content.';
+        }
+        if ($content !== null && $analyzeError === null) {
+            if ($filename === '') $filename = 'pasted-content.php';
+            $sha256 = hash('sha256', $content);
+            $meta = ['extension' => strtolower(pathinfo($filename, PATHINFO_EXTENSION)), 'sha256' => $sha256];
+            $engine = new SignatureEngine();
+            $matches = [];
+            foreach ($engine->enabledSignatures() as $sig) {
+                $match = $engine->match($sig, $filename, $filename, $meta, $content, '');
+                if ($match) $matches[] = ['signature' => $match['signature'], 'matched' => $match['matched']];
+            }
+            $elsewhere = DB::select('SELECT fs.path, fs.is_missing, fs.last_seen_at, s.name site_name, u.name user_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE fs.sha256=? ORDER BY fs.last_seen_at DESC LIMIT 100', [$sha256]);
+            $analyzeResult = ['filename' => $filename, 'sha256' => $sha256, 'size' => strlen($content), 'matches' => $matches, 'elsewhere' => $elsewhere, 'preview' => substr($content, 0, 4000)];
+        }
+    }
+    echo view('signatures.analyze', ['result' => $analyzeResult, 'error' => $analyzeError]);
+    exit;
+}
 if (preg_match('#^/signatures/(\d+)$#',$path,$m)) { $sig=DB::first('SELECT * FROM malware_signatures WHERE id=?',[(int)$m[1]]); echo view('signatures.show',['signature'=>$sig,'matches'=>DB::select('SELECT * FROM findings WHERE last_matched_signature_id=? OR matched_signature_name=? ORDER BY id DESC LIMIT 50',[(int)$m[1],$sig['name']??''])]); exit; }
 if (preg_match('#^/findings/(\d+)$#',$path,$m)) {
     $f=DB::first('SELECT f.*,s.name site_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id WHERE f.id=?',[(int)$m[1]]);
@@ -205,6 +243,37 @@ if (preg_match('#^/incidents/(\d+)$#',$path,$m)) {
         'excludedIps' => json_decode((string)($incident['excluded_ips_json'] ?? '[]'), true) ?: [],
         'responseActions' => json_decode((string)($incident['response_actions_json'] ?? '{}'), true) ?: [],
     ]);
+    exit;
+}
+if ($path === '/search') {
+    $q = trim((string)($_GET['q'] ?? ''));
+    $isHash = (bool) preg_match('/^[a-f0-9]{64}$/i', $q);
+    $isIp = (bool) preg_match('/^(\d{1,3}\.){3}\d{1,3}$/', $q);
+    $results = ['q' => $q, 'is_hash' => $isHash, 'is_ip' => $isIp];
+    if ($q !== '') {
+        $like = '%' . $q . '%';
+        if ($isHash) {
+            $hash = strtolower($q);
+            $results['file_snapshots'] = DB::select('SELECT fs.*, s.name site_name, u.name user_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE fs.sha256=? ORDER BY fs.last_seen_at DESC LIMIT 100', [$hash]);
+            $results['findings'] = DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE f.sha256=? ORDER BY f.id DESC LIMIT 100', [$hash]);
+            $results['quarantine'] = DB::select('SELECT * FROM quarantine_items WHERE sha256=? ORDER BY id DESC LIMIT 100', [$hash]);
+            $results['signatures'] = DB::select("SELECT * FROM malware_signatures WHERE pattern_type='hash' AND pattern_json LIKE ? ORDER BY id DESC LIMIT 100", ['%' . $hash . '%']);
+            $results['file_iocs'] = DB::select('SELECT fi.*, GROUP_CONCAT(i.title) incident_titles FROM incident_file_iocs fi LEFT JOIN incident_file_ioc_links l ON l.file_ioc_id=fi.id LEFT JOIN incidents i ON i.id=l.incident_id WHERE fi.sha256=? GROUP BY fi.id ORDER BY fi.id DESC LIMIT 100', [$hash]);
+        } elseif ($isIp) {
+            $results['threat_ips'] = DB::select('SELECT * FROM threat_ips WHERE ip=?', [$q]);
+            $results['trusted_ips'] = DB::select('SELECT * FROM trusted_ips WHERE ip=?', [$q]);
+            $results['logs'] = DB::select('SELECT l.*, s.name site_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id WHERE l.ip=? ORDER BY l.id DESC LIMIT 100', [$q]);
+        } else {
+            $results['file_snapshots'] = DB::select('SELECT fs.*, s.name site_name, u.name user_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE fs.path LIKE ? ORDER BY fs.last_seen_at DESC LIMIT 100', [$like]);
+            $results['findings'] = DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE f.path LIKE ? OR f.title LIKE ? ORDER BY f.id DESC LIMIT 100', [$like, $like]);
+            $results['quarantine'] = DB::select('SELECT * FROM quarantine_items WHERE original_path LIKE ? ORDER BY id DESC LIMIT 100', [$like]);
+            $results['logs'] = DB::select('SELECT l.*, s.name site_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id WHERE l.uri LIKE ? ORDER BY l.id DESC LIMIT 100', [$like]);
+            $results['signatures'] = DB::select('SELECT * FROM malware_signatures WHERE name LIKE ? OR description LIKE ? OR pattern_json LIKE ? ORDER BY id DESC LIMIT 100', [$like, $like, $like]);
+            $results['incidents'] = DB::select('SELECT * FROM incidents WHERE title LIKE ? OR summary LIKE ? ORDER BY id DESC LIMIT 100', [$like, $like]);
+            $results['file_iocs'] = DB::select('SELECT fi.*, GROUP_CONCAT(i.title) incident_titles FROM incident_file_iocs fi LEFT JOIN incident_file_ioc_links l ON l.file_ioc_id=fi.id LEFT JOIN incidents i ON i.id=l.incident_id WHERE fi.names_json LIKE ? GROUP BY fi.id ORDER BY fi.id DESC LIMIT 100', [$like]);
+        }
+    }
+    echo view('search.index', $results);
     exit;
 }
 $data = match ($path) {
