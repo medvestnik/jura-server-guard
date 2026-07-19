@@ -658,7 +658,7 @@ class ScannerService
         if ($row) DB::statement('UPDATE findings SET site_id=?,path_hash=?,finding_hash=?,risk=?,rule_key=?,title=?,description=?,matched_rules=?,related_log_event_ids=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,last_seen_scan_id=?,last_matched_signature_id=?,matched_signature_name=?,matched_signature_source=?,signature_match_details=?,updated_at=? WHERE id=?', [$siteId,$pathHash,$findingHash,$f['risk'],$f['rule_key'] ?? null,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),$runId,$sigId,$sigName,$sigSource,$matchDetails,now(),$row['id']]);
         else {
             $findingId = DB::insert('INSERT INTO findings (scan_run_id,first_seen_scan_id,last_seen_scan_id,last_matched_signature_id,matched_signature_name,matched_signature_source,signature_match_details,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$runId,$runId,$runId,$sigId,$sigName,$sigSource,$matchDetails,$siteId,$path,$pathHash,$findingHash,$f['risk'],'new',$f['type'],$f['rule_key'] ?? null,$fingerprint,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),now(),now()]);
-            $this->maybeAutoCreateSignature($findingId, $path, $f, $m, $sigId !== null);
+            $this->maybeAutoCreateSignature($findingId, $path, $f, $m, $sig !== null);
         }
     }
 
