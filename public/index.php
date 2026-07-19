@@ -1,7 +1,7 @@
 <?php
 function utc_timestamp(string $timestamp): int { return strtotime($timestamp . ' UTC') ?: strtotime($timestamp) ?: time(); }
 require dirname(__DIR__).'/vendor/autoload.php';
-use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Backups\IspmanagerBackupService;
+use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService;
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 try { DB::pdo(); } catch (Throwable $e) { echo 'Database not initialized. Run php artisan migrate.'; exit; }
@@ -116,6 +116,43 @@ if ($path === '/threat-ips/save' && $method === 'POST') {
     redirect('/threat-ips');
 }
 if ($path === '/threat-ips/delete' && $method === 'POST') { DB::statement('DELETE FROM threat_ips WHERE id=?', [(int)$_POST['id']]); redirect('/threat-ips'); }
+if ($path === '/trusted-ips/save' && $method === 'POST') {
+    $ip = trim((string)($_POST['ip'] ?? ''));
+    if ($ip !== '') {
+        $label = (string)($_POST['label'] ?? ''); $notes = (string)($_POST['notes'] ?? '');
+        $existing = DB::first('SELECT id FROM trusted_ips WHERE ip=?', [$ip]);
+        if ($existing) DB::statement('UPDATE trusted_ips SET label=?,notes=?,updated_at=? WHERE id=?', [$label,$notes,now(),$existing['id']]);
+        else DB::insert('INSERT INTO trusted_ips (ip,label,notes,created_at,updated_at) VALUES (?,?,?,?,?)', [$ip,$label,$notes,now(),now()]);
+    }
+    redirect('/trusted-ips');
+}
+if ($path === '/trusted-ips/delete' && $method === 'POST') { DB::statement('DELETE FROM trusted_ips WHERE id=?', [(int)$_POST['id']]); redirect('/trusted-ips'); }
+if ($path === '/settings/telegram-test' && $method === 'POST') {
+    $result = (new \App\Modules\Notifications\TelegramNotifier())->send((string)($_POST['message'] ?? 'Jura Server Guard: test notification.'));
+    $_SESSION['telegram_test_result'] = $result;
+    redirect('/settings');
+}
+if ($path === '/incidents/import' && $method === 'POST') {
+    $dryRun = ($_POST['dry_run'] ?? '1') === '1';
+    $upload = $_FILES['file'] ?? null;
+    $importResult = null; $importError = null;
+    if (!$upload || ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        $importError = 'No file uploaded or upload failed.';
+    } elseif ($upload['size'] > 10 * 1024 * 1024) {
+        $importError = 'File too large (max 10 MB).';
+    } else {
+        $data = json_decode((string) file_get_contents($upload['tmp_name']), true);
+        if (!is_array($data)) { $importError = 'File is not valid JSON.'; }
+        else {
+            $result = (new IncidentImportService())->import($data, $dryRun, $upload['name']);
+            if (!$result['ok']) $importError = implode('; ', $result['errors']);
+            elseif (!$dryRun) redirect('/incidents/' . $result['summary']['incident_id']);
+            else $importResult = $result;
+        }
+    }
+    echo view('incidents.import', ['result' => $importResult, 'error' => $importError]);
+    exit;
+}
 if ($path === '/scan/active.json') { header('Content-Type: application/json'); echo json_encode(scan_active_context(), JSON_UNESCAPED_SLASHES); exit; }
 if ($path === '/scan/cleanup-stale' && $method==='POST') { $ctx=scan_active_context(); if ($ctx['stale']) { DB::statement("UPDATE scan_runs SET status='completed', finished_at=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated", [now(), 'Marked completed by web cleanup: stale run had reached 100%', now(), 'Cleanup completed stale 100% scan', now()]); DB::statement("UPDATE scan_runs SET status='failed', finished_at=?, error_text=?, updated_at=? WHERE status='running'", [now(), 'Marked failed from web cleanup stale scan', now()]); (new ScanLock())->unlock(true); } redirect('/scan/active'); }
 if ($path === '/scan/force-unlock' && $method==='POST') { $ctx=scan_active_context(); if ($ctx['stale']) (new ScanLock())->unlock(true); redirect('/scan/active'); }
@@ -132,6 +169,44 @@ if (preg_match('#^/findings/(\d+)$#',$path,$m)) {
     echo view('findings.show',['finding'=>$f,'events'=>DB::select('SELECT * FROM log_events WHERE raw_line LIKE ? OR uri LIKE ? ORDER BY id DESC LIMIT 50',['%'.basename($f['path']??'').'%','%'.basename($f['path']??'').'%']),'preview'=>($f&&is_readable($f['path']))?file_get_contents($f['path'],false,null,0,min(config('guard.max_file_read_bytes'),65536)):'','elsewhere'=>$elsewhere]);
     exit;
 }
+if (preg_match('#^/incidents/(\d+)$#',$path,$m)) {
+    $incident = DB::first('SELECT * FROM incidents WHERE id=?', [(int)$m[1]]);
+    if (!$incident) { echo view('dashboard.404'); exit; }
+    $threatIps = DB::select('SELECT t.* FROM threat_ips t JOIN incident_threat_ip_links l ON l.threat_ip_id=t.id WHERE l.incident_id=? ORDER BY t.risk DESC, t.ip', [$incident['id']]);
+    $signatures = DB::select('SELECT ms.* FROM malware_signatures ms JOIN incident_signature_links l ON l.signature_id=ms.id WHERE l.incident_id=? ORDER BY ms.enabled DESC, ms.risk DESC, ms.name', [$incident['id']]);
+    $fileIocs = DB::select('SELECT f.* FROM incident_file_iocs f JOIN incident_file_ioc_links l ON l.file_ioc_id=f.id WHERE l.incident_id=? ORDER BY f.risk DESC, f.sha256', [$incident['id']]);
+    $hashes = array_values(array_unique(array_column($fileIocs, 'sha256')));
+    $seenByHash = [];
+    if ($hashes) {
+        $placeholders = implode(',', array_fill(0, count($hashes), '?'));
+        foreach (DB::select("SELECT fs.sha256, fs.path, fs.is_missing, fs.last_seen_at, s.name site_name, u.name user_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE fs.sha256 IN ($placeholders) ORDER BY fs.last_seen_at DESC", $hashes) as $row) {
+            $seenByHash[$row['sha256']][] = $row;
+        }
+    }
+    $affectedAssets = json_decode((string)($incident['affected_assets_json'] ?? '{}'), true) ?: [];
+    $allAssetNames = array_values(array_unique(array_merge([], ...array_values(array_map(fn($v)=>is_array($v)?$v:[], $affectedAssets)))));
+    $siteByName = [];
+    if ($allAssetNames) {
+        $placeholders = implode(',', array_fill(0, count($allAssetNames), '?'));
+        foreach (DB::select("SELECT s.id, s.name, s.path, u.name user_name FROM sites s LEFT JOIN users u ON u.id=s.server_user_id WHERE s.name IN ($placeholders)", $allAssetNames) as $row) {
+            $siteByName[$row['name']] = $row;
+        }
+    }
+    echo view('incidents.show', [
+        'incident' => $incident,
+        'threatIps' => $threatIps,
+        'signatures' => $signatures,
+        'fileIocs' => $fileIocs,
+        'seenByHash' => $seenByHash,
+        'timeline' => json_decode((string)($incident['timeline_json'] ?? '{}'), true) ?: [],
+        'affectedAssets' => $affectedAssets,
+        'siteByName' => $siteByName,
+        'pathIndicators' => json_decode((string)($incident['path_indicators_json'] ?? '[]'), true) ?: [],
+        'excludedIps' => json_decode((string)($incident['excluded_ips_json'] ?? '[]'), true) ?: [],
+        'responseActions' => json_decode((string)($incident['response_actions_json'] ?? '{}'), true) ?: [],
+    ]);
+    exit;
+}
 $data = match ($path) {
  '/scan/active' => ['scan.active', ['ctx'=>scan_active_context()]],
  '/' => ['dashboard.index', ['activeScan'=>scan_active_context()['run'],'activeLock'=>scan_active_context()['lock'],'last'=>DB::first('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1'),'users'=>DB::first('SELECT COUNT(*) c FROM users')['c']??0,'sites'=>DB::first('SELECT COUNT(*) c FROM sites')['c']??0,'new'=>DB::first("SELECT COUNT(*) c FROM findings WHERE status='new'")['c']??0,'crit'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='critical' AND status='new'")['c']??0,'high'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='high' AND status='new'")['c']??0,'q'=>DB::first("SELECT COUNT(*) c FROM quarantine_items WHERE status='quarantined'")['c']??0,'logs'=>DB::select('SELECT l.*, s.name site_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id ORDER BY l.id DESC LIMIT 10'),'threatIps'=>(function(){ $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return $ips; })(),'scanRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]],
@@ -144,7 +219,10 @@ $data = match ($path) {
  '/signatures' => ['signatures.index',(function(){ [$w,$p]=signature_filters(); return ['signatures'=>DB::select('SELECT * FROM malware_signatures '.$w.' ORDER BY enabled DESC,risk DESC,name',$p)]; })()],
  '/rules' => ['rules.index',['rules'=>DB::select('SELECT * FROM rules ORDER BY enabled DESC,risk DESC,name'),'allow'=>DB::select('SELECT * FROM allowlist_rules ORDER BY enabled DESC,name')]],
  '/threat-ips' => ['threat_ips.index',['ips'=>DB::select('SELECT * FROM threat_ips ORDER BY updated_at DESC'),'classifications'=>$threatIpClassifications,'prefillIp'=>$_GET['ip']??'']],
- '/settings' => ['settings.index',['settings'=>DB::select('SELECT * FROM settings ORDER BY '.DB::quoteIdentifier('key'))]],
+ '/trusted-ips' => ['trusted_ips.index',['ips'=>DB::select('SELECT * FROM trusted_ips ORDER BY updated_at DESC')]],
+ '/incidents' => ['incidents.index',['incidents'=>DB::select("SELECT i.*, (SELECT COUNT(*) FROM incident_threat_ip_links l WHERE l.incident_id=i.id) threat_ips_count, (SELECT COUNT(*) FROM incident_signature_links l WHERE l.incident_id=i.id) signatures_count, (SELECT COUNT(*) FROM incident_file_ioc_links l WHERE l.incident_id=i.id) file_iocs_count FROM incidents i ORDER BY i.imported_at DESC")]],
+ '/incidents/import' => ['incidents.import',['result'=>null,'error'=>null]],
+ '/settings' => ['settings.index',['settings'=>DB::select('SELECT * FROM settings ORDER BY '.DB::quoteIdentifier('key')),'telegramTestResult'=>(function(){ $r=$_SESSION['telegram_test_result']??null; unset($_SESSION['telegram_test_result']); return $r; })()]],
  '/backups' => ['backups.index',(function(){ $svc=new IspmanagerBackupService(); $path=$_GET['path']??''; $date=$_GET['date']??''; return ['service'=>$svc,'detect'=>$svc->detectTools(),'users'=>$svc->users(),'backups'=>$svc->backups($_GET['user']??null),'found'=>$path?$svc->findFile($path,$date?:null):[],'searchPath'=>$path,'date'=>$date,'preview'=>($path&&$date)?$svc->preview($path,$date):null,'diff'=>($path&&$date)?$svc->diff($path,$date):null]; })()],
  default => ['dashboard.404', []],
 };

@@ -88,6 +88,8 @@ Panel pages:
 - Suspicious logs
 - Quarantine
 - Threat IPs
+- Incidents
+- Trusted IPs
 - Rules and allowlist
 - Settings
 
@@ -111,6 +113,13 @@ php artisan guard:quarantine FINDING_ID
 php artisan guard:restore QUARANTINE_ID
 php artisan guard:status
 php artisan guard:find-hash SHA256
+php artisan guard:incident-import incident.json [--dry-run]
+php artisan guard:incident-list
+php artisan guard:trust-ip IP [--label=TEXT] [--notes=TEXT]
+php artisan guard:untrust-ip IP
+php artisan guard:trusted-ips
+php artisan guard:cron-scan
+php artisan guard:telegram-test [--message=TEXT]
 php artisan guard:ip-list
 php artisan guard:ip-add IP [--classification=...] [--risk=...] [--notes=...]
 php artisan guard:ip-remove IP
@@ -183,6 +192,78 @@ php artisan guard:ip-list
 php artisan guard:ip-add 1.2.3.4 --classification=webshell_access --risk=critical --notes="..."
 php artisan guard:ip-remove 1.2.3.4
 ```
+
+## Trusted IPs and Telegram alerts
+
+**Trusted IPs** (`/trusted-ips`) is a short allow-list of IP addresses known to be safe
+(admins, deploy tools, trusted maintainers) — separate from **Threat IPs**, which tracks
+attackers. It exists to cut alert noise: a new file appearing in a site's web root whose
+source IP (resolved from the closest matching access-log line) is in this list does not
+trigger a notification.
+
+**Telegram alerts** are configured entirely through `.env` (not the Settings page, which
+only writes to the DB `settings` table for the MVP and is not authoritative — see below):
+
+```env
+JURA_TELEGRAM_ENABLED=true
+JURA_TELEGRAM_BOT_TOKEN=123456:AA...        # from @BotFather
+JURA_TELEGRAM_CHAT_ID=123456789             # message your bot, then check https://api.telegram.org/bot<token>/getUpdates
+JURA_NOTIFY_NEW_CRITICAL_HIGH_FINDINGS=true
+JURA_NOTIFY_UNTRUSTED_WEBROOT_FILES=true
+JURA_NOTIFY_CRON_CHANGES=true
+JURA_CRON_MONITOR_ENABLED=true
+```
+
+After every non-dry-run scan, Jura checks for and sends one Telegram message per:
+
+* a **new** `critical`/`high` finding (a signature match, a webshell indicator, etc.) —
+  this already covers "a file matching a known signature";
+* a **new file created at a site's web root** (top-level, not inside a subdirectory) whose
+  most recent matching access-log IP is not in Trusted IPs;
+* a **new crontab entry** for any inventoried server user, checked every scan when
+  `JURA_CRON_MONITOR_ENABLED=true` (read-only `crontab -l -u <user>`; nothing is ever
+  written to any user's crontab).
+
+Each attempt (sent or failed, e.g. a wrong bot token) is logged in `notifications_log` and
+never repeated for the same finding/file/cron line. Test your configuration with:
+
+```bash
+php artisan guard:telegram-test --message="hello from Jura"
+php artisan guard:trust-ip 1.2.3.4 --label="office VPN"
+php artisan guard:trusted-ips
+php artisan guard:cron-scan
+```
+
+Note on timing: Jura detects changes on its normal scan cadence (every 30 minutes by
+default via the systemd timer), not via real-time filesystem watching — "immediately" in
+practice means "on the next scan." Lower `JURA_SCAN_INTERVAL_MINUTES` (and the systemd timer
+interval) if you need tighter detection latency.
+
+## Incident import
+
+The **Incidents** panel page imports incident reports in the `jura-server-guard-incident`
+JSON format (see `format_version: "1.x"`): incident metadata, attacker `threat_ips`
+(classification/risk/confidence/notes), ready-to-use `malware_signatures` (`hash`, `combo`,
+`regex`, `substring`, `structural` pattern types — the same engine the scanner already
+uses), `file_iocs` (SHA-256 indicators with names/role/risk), `excluded_ips` (infrastructure
+that should **not** be flagged, kept for reference only), `path_indicators`, affected
+site/user assets, and response-action notes.
+
+Import is available both from the panel (**Incidents → Import incident file**, file
+upload, dry run checked by default) and from the CLI:
+
+```bash
+php artisan guard:incident-import incident.json --dry-run
+php artisan guard:incident-import incident.json
+php artisan guard:incident-list
+```
+
+Threat IPs are upserted by `ip`, signatures by `slug`, file IOCs by `sha256` — importing
+the same file again updates existing records instead of duplicating them. Each incident's
+detail page shows its threat IPs, signatures, and file IOCs, cross-references each file IOC
+against already-scanned `file_snapshots` by SHA-256 (so you immediately see whether a known-bad
+file is present anywhere on the server), and resolves the incident's affected site names
+against the current inventory with a link to that site's findings.
 
 ## Allowlist
 
