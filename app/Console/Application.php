@@ -2,6 +2,7 @@
 namespace App\Console;
 
 use App\Modules\Backups\IspmanagerBackupService;
+use App\Modules\Incidents\IncidentImportService;
 use App\Modules\LogAnalyzer\LogAnalyzerService;
 use App\Modules\Quarantine\QuarantineService;
 use App\Modules\Rules\RuleRepository;
@@ -23,12 +24,13 @@ class Application
                 'guard:signature-list' => $this->signatureList(), 'guard:signature-test' => $this->signatureTest((int)($argv[2] ?? 0), $argv[3] ?? ''), 'guard:signature-suggest' => $this->signatureSuggest((int)($argv[2] ?? 0)), 'guard:signature-enable' => $this->signatureToggle((int)($argv[2] ?? 0), true), 'guard:signature-disable' => $this->signatureToggle((int)($argv[2] ?? 0), false), 'guard:scan-active' => $this->scanActive(), 'guard:scan-unlock' => $this->scanUnlock($argv), 'guard:cleanup-running-scans' => $this->cleanupRunningScans($argv), 'guard:prune' => $this->prune($argv), 'guard:db-stats' => $this->dbStats(), 'guard:optimize-db' => $this->optimizeDb(),
                 'guard:sites' => $this->sites(), 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:status' => $this->status(),
                 'guard:ip-list' => $this->ipList(), 'guard:ip-add' => $this->ipAdd($argv), 'guard:ip-remove' => $this->ipRemove($argv), 'guard:find-hash' => $this->findHash($argv),
+                'guard:incident-import' => $this->incidentImport($argv), 'guard:incident-list' => $this->incidentList(),
                 'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
             };
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
     }
 
-    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
+    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  guard:incident-import {path.json} [--dry-run]\n  guard:incident-list\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
     private function noop(string $cmd): int { if ($cmd==='key:generate') $this->ensureKey(); echo "$cmd complete.\n"; return 0; }
     private function ensureKey(): void { $env=base_path('.env'); if (!is_file($env) && is_file(base_path('.env.example'))) copy(base_path('.env.example'), $env); if (is_file($env)) { $c=file_get_contents($env); if (preg_match('/^APP_KEY=\s*$/m',$c)) file_put_contents($env,preg_replace('/^APP_KEY=\s*$/m','APP_KEY=base64:'.base64_encode(random_bytes(32)),$c)); } }
 
@@ -110,6 +112,7 @@ class Application
         $this->backfillScanRunCompatibilityColumns();
         $this->ensureRestoreActionsTable($driver);
         $this->ensureThreatIpsTable($driver);
+        $this->ensureIncidentTables($driver);
 
         foreach (DB::select('SELECT id,path FROM file_snapshots WHERE path_hash IS NULL OR path_hash = ?', ['']) as $row) DB::statement('UPDATE file_snapshots SET path_hash=? WHERE id=?', [hash('sha256', (string)$row['path']), $row['id']]);
         foreach (DB::select('SELECT id,path,type,rule_key,fingerprint,sha256 FROM findings WHERE path_hash IS NULL OR path_hash = ? OR finding_hash IS NULL OR finding_hash = ?', ['', '']) as $row) {
@@ -223,6 +226,22 @@ class Application
     {
         if ($driver === 'mysql') DB::pdo()->exec("CREATE TABLE IF NOT EXISTS threat_ips (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, ip VARCHAR(64) NOT NULL, classification VARCHAR(32) NOT NULL DEFAULT 'unknown', risk VARCHAR(32) NOT NULL DEFAULT 'medium', notes TEXT NULL, hit_count BIGINT NOT NULL DEFAULT 0, source VARCHAR(32) NOT NULL DEFAULT 'manual', first_seen_at DATETIME NULL, last_seen_at DATETIME NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_threat_ips_ip(ip)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         else DB::pdo()->exec("CREATE TABLE IF NOT EXISTS threat_ips (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT NOT NULL UNIQUE, classification TEXT NOT NULL DEFAULT 'unknown', risk TEXT NOT NULL DEFAULT 'medium', notes TEXT NULL, hit_count INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'manual', first_seen_at TEXT NULL, last_seen_at TEXT NULL, created_at TEXT, updated_at TEXT)");
+        $this->ensureColumn('threat_ips', 'confidence', $driver === 'mysql' ? 'VARCHAR(32) NULL' : 'TEXT NULL');
+        $this->ensureColumn('threat_ips', 'recommended_action', $driver === 'mysql' ? 'VARCHAR(64) NULL' : 'TEXT NULL');
+        $this->ensureColumn('threat_ips', 'incident_id', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
+        if ($driver === 'mysql') { try { DB::pdo()->exec("ALTER TABLE threat_ips MODIFY source VARCHAR(191) NOT NULL DEFAULT 'manual'"); } catch (\Throwable) {} }
+    }
+
+    private function ensureIncidentTables(string $driver): void
+    {
+        if ($driver === 'mysql') {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incidents (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, external_id VARCHAR(191) NOT NULL, title VARCHAR(255) NOT NULL, severity VARCHAR(32) NOT NULL DEFAULT 'medium', confidence VARCHAR(32) NULL, status VARCHAR(64) NULL, summary TEXT NULL, server_hostname VARCHAR(255) NULL, timeline_json LONGTEXT NULL, affected_assets_json LONGTEXT NULL, path_indicators_json LONGTEXT NULL, excluded_ips_json LONGTEXT NULL, response_actions_json LONGTEXT NULL, import_policy_json LONGTEXT NULL, raw_json LONGTEXT NULL, source_file VARCHAR(255) NULL, imported_at DATETIME NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_incidents_external_id(external_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_iocs (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, incident_id BIGINT UNSIGNED NULL, sha256 CHAR(64) NOT NULL, size BIGINT NULL, names_json LONGTEXT NULL, role VARCHAR(128) NULL, risk VARCHAR(32) NULL, confidence VARCHAR(32) NULL, scope VARCHAR(255) NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_incident_file_iocs_sha256(sha256), INDEX incident_file_iocs_incident_id_idx(incident_id), CONSTRAINT incident_file_iocs_incident_fk FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE SET NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        } else {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incidents (id INTEGER PRIMARY KEY AUTOINCREMENT, external_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, severity TEXT NOT NULL DEFAULT 'medium', confidence TEXT NULL, status TEXT NULL, summary TEXT NULL, server_hostname TEXT NULL, timeline_json TEXT NULL, affected_assets_json TEXT NULL, path_indicators_json TEXT NULL, excluded_ips_json TEXT NULL, response_actions_json TEXT NULL, import_policy_json TEXT NULL, raw_json TEXT NULL, source_file TEXT NULL, imported_at TEXT NULL, created_at TEXT, updated_at TEXT)");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_iocs (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NULL, sha256 TEXT NOT NULL UNIQUE, size INTEGER NULL, names_json TEXT NULL, role TEXT NULL, risk TEXT NULL, confidence TEXT NULL, scope TEXT NULL, created_at TEXT, updated_at TEXT)");
+        }
+        $this->ensureColumn('malware_signatures', 'incident_id', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
     }
 
     private function ensureColumn(string $table, string $column, string $definition): void
@@ -381,6 +400,32 @@ class Application
         if (!$rows) { echo "No files with sha256=$hash found in file_snapshots.\n"; return 0; }
         echo "user\tsite\tpath\tmissing\tlast_seen_at\n";
         foreach ($rows as $r) echo ($r['user_name'] ?? '')."\t".($r['site_name'] ?? '')."\t{$r['path']}\t".($r['is_missing'] ? 'yes' : 'no')."\t{$r['last_seen_at']}\n";
+        return 0;
+    }
+
+    private function incidentImport(array $argv): int {
+        $path = $argv[2] ?? null;
+        if (!$path || !is_file($path)) throw new \InvalidArgumentException('Path to an incident JSON file is required.');
+        $data = json_decode((string) file_get_contents($path), true);
+        if (!is_array($data)) throw new \InvalidArgumentException('File is not valid JSON.');
+        $dryRun = in_array('--dry-run', $argv, true);
+        $result = (new IncidentImportService())->import($data, $dryRun, basename($path));
+        if (!$result['ok']) { fwrite(STDERR, "Import rejected:\n - " . implode("\n - ", $result['errors']) . "\n"); return 1; }
+        $s = $result['summary'];
+        echo ($dryRun ? "[dry-run] " : '') . "Incident {$s['incident_external_id']} ({$s['incident_action']}): " .
+            "threat_ips created={$s['threat_ips']['created']} updated={$s['threat_ips']['updated']}, " .
+            "signatures created={$s['signatures']['created']} updated={$s['signatures']['updated']}, " .
+            "file_iocs created={$s['file_iocs']['created']} updated={$s['file_iocs']['updated']}, " .
+            "excluded_ips_recorded={$s['excluded_ips_recorded']}\n";
+        if (!$dryRun) echo "Incident id: {$s['incident_id']}. View at /incidents/{$s['incident_id']}\n";
+        return 0;
+    }
+
+    private function incidentList(): int {
+        echo "id\texternal_id\tseverity\tstatus\ttitle\timported_at\n";
+        foreach (DB::select('SELECT id,external_id,severity,status,title,imported_at FROM incidents ORDER BY imported_at DESC') as $r) {
+            echo "{$r['id']}\t{$r['external_id']}\t{$r['severity']}\t".($r['status'] ?? '')."\t{$r['title']}\t{$r['imported_at']}\n";
+        }
         return 0;
     }
 }

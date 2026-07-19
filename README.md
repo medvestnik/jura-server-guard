@@ -88,6 +88,7 @@ Panel pages:
 - Suspicious logs
 - Quarantine
 - Threat IPs
+- Incidents
 - Rules and allowlist
 - Settings
 
@@ -111,6 +112,8 @@ php artisan guard:quarantine FINDING_ID
 php artisan guard:restore QUARANTINE_ID
 php artisan guard:status
 php artisan guard:find-hash SHA256
+php artisan guard:incident-import incident.json [--dry-run]
+php artisan guard:incident-list
 php artisan guard:ip-list
 php artisan guard:ip-add IP [--classification=...] [--risk=...] [--notes=...]
 php artisan guard:ip-remove IP
@@ -183,6 +186,32 @@ php artisan guard:ip-list
 php artisan guard:ip-add 1.2.3.4 --classification=webshell_access --risk=critical --notes="..."
 php artisan guard:ip-remove 1.2.3.4
 ```
+
+## Incident import
+
+The **Incidents** panel page imports incident reports in the `jura-server-guard-incident`
+JSON format (see `format_version: "1.x"`): incident metadata, attacker `threat_ips`
+(classification/risk/confidence/notes), ready-to-use `malware_signatures` (`hash`, `combo`,
+`regex`, `substring`, `structural` pattern types — the same engine the scanner already
+uses), `file_iocs` (SHA-256 indicators with names/role/risk), `excluded_ips` (infrastructure
+that should **not** be flagged, kept for reference only), `path_indicators`, affected
+site/user assets, and response-action notes.
+
+Import is available both from the panel (**Incidents → Import incident file**, file
+upload, dry run checked by default) and from the CLI:
+
+```bash
+php artisan guard:incident-import incident.json --dry-run
+php artisan guard:incident-import incident.json
+php artisan guard:incident-list
+```
+
+Threat IPs are upserted by `ip`, signatures by `slug`, file IOCs by `sha256` — importing
+the same file again updates existing records instead of duplicating them. Each incident's
+detail page shows its threat IPs, signatures, and file IOCs, cross-references each file IOC
+against already-scanned `file_snapshots` by SHA-256 (so you immediately see whether a known-bad
+file is present anywhere on the server), and resolves the incident's affected site names
+against the current inventory with a link to that site's findings.
 
 ## Allowlist
 
