@@ -1,7 +1,7 @@
 <?php
 function utc_timestamp(string $timestamp): int { return strtotime($timestamp . ' UTC') ?: strtotime($timestamp) ?: time(); }
 require dirname(__DIR__).'/vendor/autoload.php';
-use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService; use App\Modules\Ai\SignatureSuggestionService; use App\Modules\Ai\ChatService;
+use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService; use App\Modules\Ai\SignatureSuggestionService; use App\Modules\Ai\ChatService; use App\Modules\Abuse\AbuseReportService;
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 try { DB::pdo(); } catch (Throwable $e) { echo 'Database not initialized. Run php artisan migrate.'; exit; }
@@ -171,6 +171,14 @@ if ($path === '/threat-ips/save' && $method === 'POST') {
     redirect('/threat-ips');
 }
 if ($path === '/threat-ips/delete' && $method === 'POST') { DB::statement('DELETE FROM threat_ips WHERE id=?', [(int)$_POST['id']]); redirect('/threat-ips'); }
+if ($path === '/threat-ips/abuse-report') {
+    $ip = trim((string) ($_GET['ip'] ?? ''));
+    if (!preg_match('/^(\d{1,3}\.){3}\d{1,3}$/', $ip)) redirect('/threat-ips');
+    $threatIp = DB::first('SELECT * FROM threat_ips WHERE ip=?', [$ip]);
+    $draft = (new AbuseReportService())->buildDraft($ip, $threatIp);
+    echo view('threat_ips.abuse_report', ['draft' => $draft]);
+    exit;
+}
 if ($path === '/trusted-ips/save' && $method === 'POST') {
     $ip = trim((string)($_POST['ip'] ?? ''));
     if ($ip !== '') {

@@ -250,6 +250,21 @@ php artisan guard:ip-add 1.2.3.4 --classification=webshell_access --risk=critica
 php artisan guard:ip-remove 1.2.3.4
 ```
 
+### Abuse report drafts
+
+Each Threat IP has an **Abuse report** action (`/threat-ips/abuse-report?ip=...`) that looks
+up the IP's network registration via RDAP (the modern successor to WHOIS, queried over plain
+HTTPS — no port-43 access needed) and drafts a report: who the network belongs to, the
+IP's classification/notes from Threat IPs, and up to the 20 most recent log lines from that
+IP as supporting evidence. If RDAP publishes an abuse contact email, it's pre-filled in the
+draft's To: field; if not (or if the lookup fails), the draft still generates with a clear
+note that you'll need to find the contact yourself — nothing is silently skipped.
+
+**Nothing is ever sent automatically.** The draft is shown for you to review, edit, and copy
+into your own mail client — this deliberately avoids needing outbound SMTP credentials
+configured on the server and avoids any risk of an automated system sending mail on your
+behalf without a human reading it first.
+
 ## Trusted IPs and Telegram alerts
 
 **Trusted IPs** (`/trusted-ips`) is a short allow-list of IP addresses known to be safe
