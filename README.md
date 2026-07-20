@@ -158,6 +158,26 @@ For example:
 
 The original SHA-256, owner, group, permissions, mtime, original path, and quarantine path are stored in `quarantine_items`.
 
+### Bulk quarantine and delete from the Findings page
+
+When `JURA_WEB_ACTIONS_ENABLED=true`, the **Findings** page shows a checkbox per row plus
+"Quarantine selected" and "Delete selected" buttons, so a mass-infection incident (dozens or
+hundreds of matched webshells from one signature) can be cleaned up in one action instead of
+one file at a time. If more findings match the current filter than are shown on the page (the
+list is capped at 500 rows), a **Select all N matching current filter** checkbox applies the
+action to every matching finding server-side, not just the visible ones.
+
+**Quarantine** moves the file into the quarantine directory as before (reversible via
+**Restore**). **Delete** is new and permanent: the file is captured into `quarantine_items`
+(SHA-256, owner, permissions, path, reason) for the audit trail exactly like quarantine, then
+immediately removed from disk with no way to restore it — the finding and quarantine item are
+both marked `deleted`. Both actions require an explicit confirmation dialog showing how many
+files will be affected, and both are always disabled unless `JURA_WEB_ACTIONS_ENABLED=true`
+(same gate as the existing single-file quarantine action).
+
+The **User** filter field on the Findings page also autocompletes from every known account
+name as you type, so you don't need to remember or retype the exact ISPmanager username.
+
 ## Turning a finding into a signature, and cross-site search
 
 On a finding page, **Create signature from this finding** now pre-fills a ready-to-save
@@ -230,6 +250,21 @@ php artisan guard:ip-add 1.2.3.4 --classification=webshell_access --risk=critica
 php artisan guard:ip-remove 1.2.3.4
 ```
 
+### Abuse report drafts
+
+Each Threat IP has an **Abuse report** action (`/threat-ips/abuse-report?ip=...`) that looks
+up the IP's network registration via RDAP (the modern successor to WHOIS, queried over plain
+HTTPS — no port-43 access needed) and drafts a report: who the network belongs to, the
+IP's classification/notes from Threat IPs, and up to the 20 most recent log lines from that
+IP as supporting evidence. If RDAP publishes an abuse contact email, it's pre-filled in the
+draft's To: field; if not (or if the lookup fails), the draft still generates with a clear
+note that you'll need to find the contact yourself — nothing is silently skipped.
+
+**Nothing is ever sent automatically.** The draft is shown for you to review, edit, and copy
+into your own mail client — this deliberately avoids needing outbound SMTP credentials
+configured on the server and avoids any risk of an automated system sending mail on your
+behalf without a human reading it first.
+
 ## Trusted IPs and Telegram alerts
 
 **Trusted IPs** (`/trusted-ips`) is a short allow-list of IP addresses known to be safe
@@ -276,6 +311,74 @@ default via the systemd timer), not via real-time filesystem watching — "immed
 practice means "on the next scan." Lower `JURA_SCAN_INTERVAL_MINUTES` (and the systemd timer
 interval) if you need tighter detection latency.
 
+## AI provider and AI-assisted signatures
+
+Jura can call an AI provider — OpenAI or Anthropic (Claude) — for two things: generating a
+signature suggestion from a finding, and (a real request is only made when this is what you
+asked for, never silently) auto-quarantining obvious shells. Configure the provider in
+`.env`:
+
+```env
+JURA_AI_PROVIDER=openai            # or anthropic
+JURA_AI_MODEL=gpt-4o-mini          # or e.g. claude-sonnet-4-5 for Anthropic
+JURA_OPENAI_ENABLED=true
+JURA_OPENAI_API_KEY=sk-...
+# For Anthropic instead:
+JURA_ANTHROPIC_ENABLED=true
+JURA_ANTHROPIC_API_KEY=sk-ant-...
+JURA_AI_SIGNATURES_ENABLED=true    # turn on real AI calls for signature suggestions
+```
+
+**Generate signature with AI** (on a finding page) sends the finding's metadata and a
+truncated (max 8 KB) read of the file to the configured provider and asks it to propose a
+`hash` or `combo` signature. The result is stored as a **suggestion**
+(`/signatures/suggestions`, also shown inline on the finding page) — nothing is ever written
+to the real `malware_signatures` table automatically. Review the suggestion and click
+**Create signature** to save it as a real, enabled signature through the normal manual-save
+form. If `JURA_AI_SIGNATURES_ENABLED` is off, no provider is configured, or the AI request
+fails, a draft placeholder is created instead so the action never silently does nothing or
+errors out; a malformed (non-JSON) AI response is kept as a `needs_review` suggestion with
+the raw text preserved rather than being discarded.
+
+### Automatic quarantine of obvious shells
+
+```env
+JURA_AUTO_QUARANTINE_OBVIOUS_SHELLS=true   # default: false
+```
+
+When enabled, right after each scan Jura automatically quarantines a **new, critical-risk**
+finding if either:
+
+* it **matched a known signature** (built-in or custom, in `malware_signatures`) — a positive
+  identification, not just a heuristic score; or
+* the file's upload could be traced to a **specific IP address via recent access logs, and
+  that IP is not in Trusted IPs** — i.e. it was very likely dropped by an attacker, not
+  deployed by an admin.
+
+A critical finding that matches neither condition (no signature, and either no IP could be
+correlated from the logs, or the IP is trusted) is left as `new` for manual review — this is
+deliberately conservative because heuristic-only detections without a positive signal can be
+false positives. Quarantine (not permanent deletion) is used, so an auto-quarantined file can
+always be restored from `/quarantine` if it turns out to be a false positive. Every
+auto-quarantine action is also sent as a Telegram alert (independent of the other notification
+toggles above) if Telegram is configured, and the reason (matched signature name, or the
+untrusted IP) is recorded in the quarantine item for the audit trail.
+
+### AI chat
+
+```env
+JURA_AI_CHAT_ENABLED=true   # default: false
+```
+
+Adds an **AI chat** link to the nav bar. The assistant can search findings, look up one
+finding's details, and — only ever with an explicit confirmation step, never immediately —
+quarantine a finding, permanently delete a finding, or add an IP to the trusted list. When it
+proposes one of those three actions, the conversation shows a **Confirm** / **Cancel** card
+with the exact action and arguments; nothing runs until you click Confirm, and Cancel leaves
+the finding/IP untouched. Read-only lookups (search, inspect) run immediately without a
+confirmation step since they can't change anything. Conversation history is kept per admin
+account and can be cleared from the chat page at any time.
+
 ## Incident import
 
 The **Incidents** panel page imports incident reports in the `jura-server-guard-incident`
@@ -295,12 +398,19 @@ php artisan guard:incident-import incident.json
 php artisan guard:incident-list
 ```
 
-Threat IPs are upserted by `ip`, signatures by `slug`, file IOCs by `sha256` — importing
-the same file again updates existing records instead of duplicating them. Each incident's
-detail page shows its threat IPs, signatures, and file IOCs, cross-references each file IOC
-against already-scanned `file_snapshots` by SHA-256 (so you immediately see whether a known-bad
-file is present anywhere on the server), and resolves the incident's affected site names
-against the current inventory with a link to that site's findings.
+Threat IPs are upserted by `ip`, signatures by `slug`, file IOCs by `sha256` when known —
+importing the same file again updates existing records instead of duplicating them. Each
+incident's detail page shows its threat IPs, signatures, and file IOCs, cross-references each
+file IOC against already-scanned `file_snapshots` by SHA-256 (so you immediately see whether
+a known-bad file is present anywhere on the server), and resolves the incident's affected
+site names against the current inventory with a link to that site's findings.
+
+A `file_ioc` doesn't strictly need a `sha256` — it's common to write up an incident before a
+file's hash has actually been collected (e.g. investigation notes captured its filename,
+size, and role, but the sample wasn't hashed yet). In that case, set `"sha256": null` and
+provide `name` (or `names`) instead; the entry is upserted by name+size+role until a later
+import fills in the real hash. Only when a `sha256` value **is** present must it be a valid
+64-character hex string.
 
 ## Allowlist
 

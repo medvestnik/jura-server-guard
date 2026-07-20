@@ -1,7 +1,7 @@
 <?php
 function utc_timestamp(string $timestamp): int { return strtotime($timestamp . ' UTC') ?: strtotime($timestamp) ?: time(); }
 require dirname(__DIR__).'/vendor/autoload.php';
-use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService;
+use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService; use App\Modules\Ai\SignatureSuggestionService; use App\Modules\Ai\ChatService; use App\Modules\Abuse\AbuseReportService;
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 try { DB::pdo(); } catch (Throwable $e) { echo 'Database not initialized. Run php artisan migrate.'; exit; }
@@ -51,15 +51,25 @@ function send_csv(string $filename, array $rows): void {
     if ($rows) { fputcsv($out, array_keys($rows[0])); foreach ($rows as $row) fputcsv($out, $row); }
     fclose($out); exit;
 }
-function finding_filters(): array {
+function finding_filters(?array $source = null): array {
+    $source = $source ?? $_GET;
     $where=[]; $params=[];
-    foreach (['risk'=>'f.risk','status'=>'f.status','type'=>'f.type'] as $key=>$col) if (($_GET[$key]??'')!=='') { $where[]="$col=?"; $params[]=$_GET[$key]; }
-    if (($_GET['user']??'')!=='') { $where[]='u.name=?'; $params[]=$_GET['user']; }
-    if (($_GET['site']??'')!=='') { $where[]='s.name=?'; $params[]=$_GET['site']; }
-    if (($_GET['path']??'')!=='') { $where[]='f.path LIKE ?'; $params[]='%'.$_GET['path'].'%'; }
-    if (($_GET['date_from']??'')!=='') { $where[]='f.last_seen_at >= ?'; $params[]=$_GET['date_from'].' 00:00:00'; }
-    if (($_GET['date_to']??'')!=='') { $where[]='f.last_seen_at <= ?'; $params[]=$_GET['date_to'].' 23:59:59'; }
+    foreach (['risk'=>'f.risk','status'=>'f.status','type'=>'f.type'] as $key=>$col) if (($source[$key]??'')!=='') { $where[]="$col=?"; $params[]=$source[$key]; }
+    if (($source['user']??'')!=='') { $where[]='u.name=?'; $params[]=$source['user']; }
+    if (($source['site']??'')!=='') { $where[]='s.name=?'; $params[]=$source['site']; }
+    if (($source['path']??'')!=='') { $where[]='f.path LIKE ?'; $params[]='%'.$source['path'].'%'; }
+    if (($source['date_from']??'')!=='') { $where[]='f.last_seen_at >= ?'; $params[]=$source['date_from'].' 00:00:00'; }
+    if (($source['date_to']??'')!=='') { $where[]='f.last_seen_at <= ?'; $params[]=$source['date_to'].' 23:59:59'; }
     return [$where ? 'WHERE '.implode(' AND ', $where) : '', $params];
+}
+
+function resolve_bulk_finding_ids(): array {
+    if (($_POST['select_all_filtered'] ?? '') === '1') {
+        [$w,$p] = finding_filters((array)($_POST['back_query'] ?? []));
+        $rows = DB::select("SELECT f.id FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id $w", $p);
+        return array_map(fn($r)=>(int)$r['id'], $rows);
+    }
+    return array_values(array_unique(array_filter(array_map('intval', (array)($_POST['ids'] ?? [])))));
 }
 
 function file_change_filters(): array {
@@ -84,8 +94,41 @@ if ($path === '/signatures/toggle' && $method==='POST') { DB::statement('UPDATE 
 if ($path === '/signatures/delete' && $method==='POST') { DB::statement('DELETE FROM malware_signatures WHERE id=?',[(int)$_POST['id']]); redirect('/signatures'); }
 if ($path === '/signatures/duplicate' && $method==='POST') { $r=DB::first('SELECT * FROM malware_signatures WHERE id=?',[(int)$_POST['id']]); if($r) DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,target_paths,exclude_paths,required_hits,enabled,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[$r['name'].' copy',$r['slug'].'-copy-'.time(),$r['description'],$r['risk'],$r['type'],$r['pattern_type'],$r['pattern_json'],$r['target_extensions'],$r['target_paths'],$r['exclude_paths'],$r['required_hits'],0,'manual',now(),now()]); redirect('/signatures'); }
 if ($path === '/signatures/save' && $method==='POST') { $id=(int)($_POST['id']??0); $slug=$_POST['slug'] ?: strtolower(preg_replace('/[^a-z0-9]+/i','-',$_POST['name'])); if($id) DB::statement('UPDATE malware_signatures SET name=?,slug=?,description=?,risk=?,type=?,pattern_type=?,pattern_json=?,source=?,updated_at=? WHERE id=?',[$_POST['name'],$slug,$_POST['description'],$_POST['risk'],$_POST['type'],$_POST['pattern_type'],$_POST['pattern_json'],'manual',now(),$id]); else $id=DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,enabled,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?,?)',[$_POST['name'],$slug,$_POST['description'],$_POST['risk'],$_POST['type'],$_POST['pattern_type'],$_POST['pattern_json'],'[]','manual',now(),now()]); redirect('/signatures/'.$id); }
-if ($path === '/finding/signature-suggest' && $method==='POST') { $id=(int)$_POST['id']; $f=DB::first('SELECT * FROM findings WHERE id=?',[$id]); if($f) DB::insert('INSERT INTO signature_suggestions (finding_id,source_file_path,source_file_sha256,ai_provider,model,status,suggested_name,suggested_risk,suggested_type,suggested_pattern_type,suggested_pattern_json,explanation,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[$id,$f['path'],$f['sha256'],env_value('JURA_AI_PROVIDER','openai'),env_value('JURA_AI_MODEL',''),'draft','Draft from finding '.$id,$f['risk'],$f['type'],'combo','{}','Warning: review before sending snippets to AI. Draft only; not enabled automatically.',now(),now()]); redirect('/findings/'.$id); }
+if ($path === '/finding/signature-suggest' && $method==='POST') { $id=(int)$_POST['id']; if(DB::first('SELECT id FROM findings WHERE id=?',[$id])) { try { (new SignatureSuggestionService())->suggest($id); } catch (Throwable $e) {} } redirect('/findings/'.$id); }
+if ($path === '/signatures/suggestions') { echo view('signatures.suggestions', ['suggestions'=>DB::select('SELECT ss.*, f.path finding_path FROM signature_suggestions ss LEFT JOIN findings f ON f.id=ss.finding_id ORDER BY ss.id DESC LIMIT 200')]); exit; }
+if ($path === '/signatures/create-from-suggestion') {
+    $sid = (int)($_GET['id'] ?? 0);
+    $s = DB::first('SELECT * FROM signature_suggestions WHERE id=?', [$sid]);
+    if (!$s) redirect('/signatures/suggestions');
+    echo view('signatures.form', ['signature' => ['name' => $s['suggested_name'], 'slug' => 'ai-' . $sid . '-' . time(), 'risk' => $s['suggested_risk'], 'type' => $s['suggested_type'], 'pattern_type' => $s['suggested_pattern_type'], 'pattern_json' => $s['suggested_pattern_json'], 'description' => $s['explanation']], 'preview' => '']);
+    exit;
+}
 if ($path === '/finding/create-signature' && $method==='POST') { $f=DB::first('SELECT * FROM findings WHERE id=?',[(int)$_POST['id']]); $hasHash=!empty($f['sha256']); $preview=($f&&is_readable($f['path']))?file_get_contents($f['path'],false,null,0,min(config('guard.max_file_read_bytes'),65536)):''; echo view('signatures.form',['signature'=>['name'=>'Signature from finding '.$f['id'],'slug'=>'finding-'.$f['id'].'-'.time(),'risk'=>$f['risk'],'type'=>$f['type'],'pattern_type'=>$hasHash?'hash':'combo','pattern_json'=>$hasHash?json_encode(['sha256'=>[$f['sha256']]]):'{}','description'=>$f['description']],'preview'=>$preview]); exit; }
+
+if ($path === '/ai-chat') {
+    if (!config('guard.ai_chat_enabled')) redirect('/');
+    $adminId = (int) ($_SESSION['admin_id'] ?? 0);
+    echo view('ai_chat.index', ['messages' => (new ChatService())->history($adminId)]);
+    exit;
+}
+if ($path === '/ai-chat/send' && $method === 'POST' && config('guard.ai_chat_enabled')) {
+    $adminId = (int) ($_SESSION['admin_id'] ?? 0);
+    $text = trim((string) ($_POST['message'] ?? ''));
+    if ($text !== '') { try { (new ChatService())->send($adminId, $text); } catch (Throwable $e) {} }
+    redirect('/ai-chat');
+}
+if ($path === '/ai-chat/confirm' && $method === 'POST' && config('guard.ai_chat_enabled')) {
+    (new ChatService())->resolvePending((int) ($_POST['id'] ?? 0), true);
+    redirect('/ai-chat');
+}
+if ($path === '/ai-chat/cancel' && $method === 'POST' && config('guard.ai_chat_enabled')) {
+    (new ChatService())->resolvePending((int) ($_POST['id'] ?? 0), false);
+    redirect('/ai-chat');
+}
+if ($path === '/ai-chat/clear' && $method === 'POST' && config('guard.ai_chat_enabled')) {
+    (new ChatService())->clear((int) ($_SESSION['admin_id'] ?? 0));
+    redirect('/ai-chat');
+}
 
 function log_filters(): array {
     $where=[]; $params=[];
@@ -101,6 +144,18 @@ if ($path === '/finding/ignore' && $method==='POST') { DB::statement('UPDATE fin
 if ($path === '/finding/allowlist' && $method==='POST') { $f=DB::first('SELECT * FROM findings WHERE id=?',[(int)$_POST['id']]); if($f) DB::insert('INSERT INTO allowlist_rules (name,path_pattern,sha256,reason,enabled,created_at,updated_at) VALUES (?,?,?,?,1,?,?)',['Web allowlist '.$f['id'],$f['path'],$f['sha256'],'Added from finding page',now(),now()]); redirect('/rules'); }
 if ($path === '/finding/quarantine' && $method==='POST' && config('guard.web_actions_enabled')) { (new QuarantineService())->quarantine((int)$_POST['id'], 'Web panel quarantine'); redirect('/quarantine'); }
 if ($path === '/quarantine/restore' && $method==='POST' && config('guard.web_actions_enabled')) { (new QuarantineService())->restore((int)$_POST['id']); redirect('/quarantine'); }
+if ($path === '/findings/bulk-quarantine' && $method==='POST' && config('guard.web_actions_enabled')) {
+    @set_time_limit(300);
+    $ids = resolve_bulk_finding_ids(); $svc = new QuarantineService(); $ok=0; $fail=0;
+    foreach ($ids as $id) { try { $svc->quarantine($id, 'Bulk web panel quarantine'); $ok++; } catch (Throwable $e) { $fail++; } }
+    redirect('/findings?'.http_build_query(array_merge($_POST['back_query'] ?? [], ['bulk_result'=>'quarantine','bulk_ok'=>$ok,'bulk_fail'=>$fail])));
+}
+if ($path === '/findings/bulk-delete' && $method==='POST' && config('guard.web_actions_enabled')) {
+    @set_time_limit(300);
+    $ids = resolve_bulk_finding_ids(); $svc = new QuarantineService(); $ok=0; $fail=0;
+    foreach ($ids as $id) { try { $svc->delete($id, 'Bulk web panel delete'); $ok++; } catch (Throwable $e) { $fail++; } }
+    redirect('/findings?'.http_build_query(array_merge($_POST['back_query'] ?? [], ['bulk_result'=>'delete','bulk_ok'=>$ok,'bulk_fail'=>$fail])));
+}
 if ($path === '/rules/toggle' && $method==='POST') { $table=($_POST['table']??'rules')==='allowlist_rules'?'allowlist_rules':'rules'; DB::statement("UPDATE $table SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?", [now(), (int)$_POST['id']]); redirect('/rules'); }
 $threatIpClassifications = ['scanner','bruteforce','webshell_access','bot','direct_login','manual','unknown'];
 if ($path === '/threat-ips/save' && $method === 'POST') {
@@ -116,6 +171,14 @@ if ($path === '/threat-ips/save' && $method === 'POST') {
     redirect('/threat-ips');
 }
 if ($path === '/threat-ips/delete' && $method === 'POST') { DB::statement('DELETE FROM threat_ips WHERE id=?', [(int)$_POST['id']]); redirect('/threat-ips'); }
+if ($path === '/threat-ips/abuse-report') {
+    $ip = trim((string) ($_GET['ip'] ?? ''));
+    if (!preg_match('/^(\d{1,3}\.){3}\d{1,3}$/', $ip)) redirect('/threat-ips');
+    $threatIp = DB::first('SELECT * FROM threat_ips WHERE ip=?', [$ip]);
+    $draft = (new AbuseReportService())->buildDraft($ip, $threatIp);
+    echo view('threat_ips.abuse_report', ['draft' => $draft]);
+    exit;
+}
 if ($path === '/trusted-ips/save' && $method === 'POST') {
     $ip = trim((string)($_POST['ip'] ?? ''));
     if ($ip !== '') {
@@ -204,7 +267,7 @@ if (preg_match('#^/signatures/(\d+)$#',$path,$m)) { $sig=DB::first('SELECT * FRO
 if (preg_match('#^/findings/(\d+)$#',$path,$m)) {
     $f=DB::first('SELECT f.*,s.name site_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id WHERE f.id=?',[(int)$m[1]]);
     $elsewhere = (!empty($f['sha256'])) ? DB::select('SELECT fs.path, fs.is_missing, fs.last_seen_at, s.name site_name, u.name user_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE fs.sha256=? AND fs.path<>? ORDER BY fs.last_seen_at DESC LIMIT 100', [$f['sha256'], $f['path']]) : [];
-    echo view('findings.show',['finding'=>$f,'events'=>DB::select('SELECT * FROM log_events WHERE raw_line LIKE ? OR uri LIKE ? ORDER BY id DESC LIMIT 50',['%'.basename($f['path']??'').'%','%'.basename($f['path']??'').'%']),'preview'=>($f&&is_readable($f['path']))?file_get_contents($f['path'],false,null,0,min(config('guard.max_file_read_bytes'),65536)):'','elsewhere'=>$elsewhere]);
+    echo view('findings.show',['finding'=>$f,'events'=>DB::select('SELECT * FROM log_events WHERE raw_line LIKE ? OR uri LIKE ? ORDER BY id DESC LIMIT 50',['%'.basename($f['path']??'').'%','%'.basename($f['path']??'').'%']),'preview'=>($f&&is_readable($f['path']))?file_get_contents($f['path'],false,null,0,min(config('guard.max_file_read_bytes'),65536)):'','elsewhere'=>$elsewhere,'aiSuggestions'=>DB::select('SELECT * FROM signature_suggestions WHERE finding_id=? ORDER BY id DESC',[(int)$m[1]])]);
     exit;
 }
 if (preg_match('#^/incidents/(\d+)$#',$path,$m)) {
@@ -281,7 +344,7 @@ $data = match ($path) {
  '/' => ['dashboard.index', ['activeScan'=>scan_active_context()['run'],'activeLock'=>scan_active_context()['lock'],'last'=>DB::first('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1'),'users'=>DB::first('SELECT COUNT(*) c FROM users')['c']??0,'sites'=>DB::first('SELECT COUNT(*) c FROM sites')['c']??0,'new'=>DB::first("SELECT COUNT(*) c FROM findings WHERE status='new'")['c']??0,'crit'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='critical' AND status='new'")['c']??0,'high'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='high' AND status='new'")['c']??0,'q'=>DB::first("SELECT COUNT(*) c FROM quarantine_items WHERE status='quarantined'")['c']??0,'logs'=>DB::select('SELECT l.*, s.name site_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id ORDER BY l.id DESC LIMIT 10'),'threatIps'=>(function(){ $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return $ips; })(),'scanRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]],
  '/users' => ['users.index',['scanCtx'=>scan_active_context(),'users'=>DB::select('SELECT u.*, COUNT(DISTINCT s.id) sites_count, COUNT(f.id) findings_count, MAX(s.last_scan_at) last_scan_at FROM users u LEFT JOIN sites s ON s.server_user_id=u.id LEFT JOIN findings f ON f.site_id=s.id GROUP BY u.id ORDER BY u.name')]],
  '/sites' => ['sites.index',['scanCtx'=>scan_active_context(),'sites'=>DB::select('SELECT s.*, u.name user_name, COUNT(f.id) findings_count, MAX(CASE f.risk WHEN "critical" THEN 4 WHEN "high" THEN 3 WHEN "medium" THEN 2 ELSE 1 END) risk_score FROM sites s LEFT JOIN users u ON u.id=s.server_user_id LEFT JOIN findings f ON f.site_id=s.id AND f.status="new" GROUP BY s.id ORDER BY s.path')]],
- '/findings' => ['findings.index',(function(){ [$w,$p]=finding_filters(); return ['findings'=>DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY CASE risk WHEN "critical" THEN 1 WHEN "high" THEN 2 WHEN "medium" THEN 3 ELSE 4 END, f.id DESC LIMIT 500',$p)]; })()],
+ '/findings' => ['findings.index',(function(){ [$w,$p]=finding_filters(); $total=(int)(DB::first('SELECT COUNT(*) c FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w, $p)['c'] ?? 0); return ['findings'=>DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY CASE risk WHEN "critical" THEN 1 WHEN "high" THEN 2 WHEN "medium" THEN 3 ELSE 4 END, f.id DESC LIMIT 500',$p), 'total'=>$total, 'user_names'=>array_column(DB::select('SELECT DISTINCT name FROM users ORDER BY name'), 'name')]; })()],
  '/logs' => ['logs.index',(function(){ [$w,$p]=log_filters(); $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return ['events'=>DB::select('SELECT l.*, s.name site_name, u.name user_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY l.id DESC LIMIT 1000',$p),'threatIps'=>$ips]; })()],
  '/file-changes' => ['file-changes.index',(function(){ [$w,$p]=file_change_filters(); return ['changes'=>DB::select('SELECT fs.*, s.name site_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id '.$w.' ORDER BY COALESCE(fs.last_changed_at,fs.first_seen_at,fs.updated_at) DESC LIMIT 1000',$p), 'lastRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]; })()],
  '/quarantine' => ['quarantine.index',['items'=>DB::select('SELECT * FROM quarantine_items ORDER BY id DESC')]],

@@ -29,7 +29,9 @@ class IncidentImportService
             if (!is_array($sig['pattern_json'] ?? null)) $errors[] = "malware_signatures[$i].pattern_json must be an object";
         }
         foreach ((array)($data['file_iocs'] ?? []) as $i => $ioc) {
-            if (empty($ioc['sha256']) || !preg_match('/^[a-f0-9]{64}$/i', (string)$ioc['sha256'])) $errors[] = "file_iocs[$i].sha256 must be a 64-char hex SHA-256";
+            $hasSha256 = !empty($ioc['sha256']);
+            if ($hasSha256 && !preg_match('/^[a-f0-9]{64}$/i', (string)$ioc['sha256'])) $errors[] = "file_iocs[$i].sha256 must be a 64-char hex SHA-256";
+            if (!$hasSha256 && empty($ioc['name']) && empty($ioc['names'])) $errors[] = "file_iocs[$i] must have either sha256, or name/names, to identify the file";
         }
         return $errors;
     }
@@ -58,7 +60,7 @@ class IncidentImportService
                 DB::first('SELECT id FROM malware_signatures WHERE slug=?', [$sig['slug']]) ? $summary['signatures']['updated']++ : $summary['signatures']['created']++;
             }
             foreach ((array) ($data['file_iocs'] ?? []) as $ioc) {
-                DB::first('SELECT id FROM incident_file_iocs WHERE sha256=?', [strtolower($ioc['sha256'])]) ? $summary['file_iocs']['updated']++ : $summary['file_iocs']['created']++;
+                DB::first('SELECT id FROM incident_file_iocs WHERE dedup_key=?', [$this->fileIocDedupKey($ioc)]) ? $summary['file_iocs']['updated']++ : $summary['file_iocs']['created']++;
             }
             return ['ok' => true, 'dry_run' => true, 'summary' => $summary];
         }
@@ -169,13 +171,28 @@ class IncidentImportService
     /** @return array{0:bool,1:int} [created, file_ioc_id] */
     private function upsertFileIoc(array $ioc, int $incidentId): array
     {
-        $sha = strtolower($ioc['sha256']);
-        $existing = DB::first('SELECT id FROM incident_file_iocs WHERE sha256=?', [$sha]);
-        $fields = [$incidentId, isset($ioc['size']) ? (int) $ioc['size'] : null, json_encode($ioc['names'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), $ioc['role'] ?? null, $ioc['risk'] ?? null, $ioc['confidence'] ?? null, $ioc['scope'] ?? null];
+        $sha = !empty($ioc['sha256']) ? strtolower($ioc['sha256']) : null;
+        $dedupKey = $this->fileIocDedupKey($ioc);
+        $existing = DB::first('SELECT id FROM incident_file_iocs WHERE dedup_key=?', [$dedupKey]);
+        $names = $ioc['names'] ?? (isset($ioc['name']) ? [$ioc['name']] : []);
+        $fields = [$incidentId, isset($ioc['size']) ? (int) $ioc['size'] : null, json_encode($names, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), $ioc['role'] ?? null, $ioc['risk'] ?? null, $ioc['confidence'] ?? null, $ioc['scope'] ?? null];
         if ($existing) {
-            DB::statement('UPDATE incident_file_iocs SET incident_id=?,size=?,names_json=?,role=?,risk=?,confidence=?,scope=?,updated_at=? WHERE id=?', [...$fields, now(), $existing['id']]);
+            // COALESCE: a later import that finally supplies the hash should fill it in, but never erase one already recorded.
+            DB::statement('UPDATE incident_file_iocs SET incident_id=?,size=?,names_json=?,role=?,risk=?,confidence=?,scope=?,sha256=COALESCE(?,sha256),updated_at=? WHERE id=?', [...$fields, $sha, now(), $existing['id']]);
             return [false, (int) $existing['id']];
         }
-        return [true, DB::insert('INSERT INTO incident_file_iocs (incident_id,size,names_json,role,risk,confidence,scope,sha256,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)', [...$fields, $sha, now(), now()])];
+        return [true, DB::insert('INSERT INTO incident_file_iocs (incident_id,size,names_json,role,risk,confidence,scope,sha256,dedup_key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)', [...$fields, $sha, $dedupKey, now(), now()])];
+    }
+
+    /** Identity used to upsert a file IOC: the SHA-256 when known, otherwise a stable key derived
+     *  from name/role/size (matches the incident format's own "sha256_when_available_else_name_size_markers"
+     *  policy for reports written before a file's hash has been collected). */
+    private function fileIocDedupKey(array $ioc): string
+    {
+        if (!empty($ioc['sha256'])) return strtolower((string) $ioc['sha256']);
+        $name = strtolower((string) ($ioc['name'] ?? ($ioc['names'][0] ?? '')));
+        $size = (string) ($ioc['size'] ?? '');
+        $role = strtolower((string) ($ioc['role'] ?? ''));
+        return hash('sha256', 'namesize:' . $name . '|' . $size . '|' . $role);
     }
 }
