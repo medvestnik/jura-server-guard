@@ -2,7 +2,9 @@
 namespace App\Modules\Notifications;
 
 use App\Modules\CronMonitor\CronMonitorService;
+use App\Modules\Quarantine\QuarantineService;
 use App\Support\DB;
+use Throwable;
 
 class AlertService
 {
@@ -12,9 +14,9 @@ class AlertService
 
     public function runPostScanChecks(int $scanRunId): void
     {
-        if (!$this->telegram->enabled()) return;
-        if (config('guard.notify_new_critical_high_findings')) $this->notifyNewFindings($scanRunId);
-        if (config('guard.notify_untrusted_webroot_files')) $this->notifyUntrustedWebrootFiles($scanRunId);
+        if ($this->telegram->enabled() && config('guard.notify_new_critical_high_findings')) $this->notifyNewFindings($scanRunId);
+        $this->autoQuarantineObviousShells($scanRunId);
+        if ($this->telegram->enabled() && config('guard.notify_untrusted_webroot_files')) $this->notifyUntrustedWebrootFiles($scanRunId);
     }
 
     /**
@@ -61,6 +63,41 @@ class AlertService
             $result = $this->telegram->send($msg);
             $this->log('untrusted_webroot_file', $msg, 'file_snapshot', (int) $fs['id'], $result);
         }
+    }
+
+    private function autoQuarantineObviousShells(int $scanRunId): void
+    {
+        if (!config('guard.auto_quarantine_obvious_shells')) return;
+        $rows = DB::select("SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE f.first_seen_scan_id=? AND f.risk='critical' AND f.status='new'", [$scanRunId]);
+        if (!$rows) return;
+        $trusted = [];
+        foreach (DB::select('SELECT ip FROM trusted_ips') as $r) $trusted[$r['ip']] = true;
+        $quarantine = new QuarantineService();
+        foreach ($rows as $f) {
+            $reason = $this->classifyObviousShell($f, $trusted);
+            if ($reason === null) continue;
+            try {
+                $quarantine->quarantine((int) $f['id'], 'Auto-quarantine: ' . $reason);
+                $msg = "🔒 Auto-quarantined obvious shell\nUser: " . ($f['user_name'] ?? '?') . "\nSite: " . ($f['site_name'] ?? '?') . "\nPath: {$f['path']}\nReason: {$reason}";
+                $result = $this->telegram->send($msg);
+                $this->log('auto_quarantine', $msg, 'finding', (int) $f['id'], $result);
+            } catch (Throwable $e) {
+                // Leave the finding as 'new' so it still surfaces for manual handling.
+            }
+        }
+    }
+
+    /** Returns a human-readable reason to auto-quarantine, or null to leave the finding alone. */
+    private function classifyObviousShell(array $finding, array $trustedIps): ?string
+    {
+        if (!empty($finding['matched_signature_name'])) {
+            return 'matched known signature "' . $finding['matched_signature_name'] . '"';
+        }
+        $ip = $this->recentIpForPath($finding['path']);
+        if ($ip !== null && !isset($trustedIps[$ip])) {
+            return 'uploaded from untrusted IP ' . $ip;
+        }
+        return null;
     }
 
     private function recentIpForPath(string $path): ?string

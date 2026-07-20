@@ -296,6 +296,59 @@ default via the systemd timer), not via real-time filesystem watching — "immed
 practice means "on the next scan." Lower `JURA_SCAN_INTERVAL_MINUTES` (and the systemd timer
 interval) if you need tighter detection latency.
 
+## AI provider and AI-assisted signatures
+
+Jura can call an AI provider — OpenAI or Anthropic (Claude) — for two things: generating a
+signature suggestion from a finding, and (a real request is only made when this is what you
+asked for, never silently) auto-quarantining obvious shells. Configure the provider in
+`.env`:
+
+```env
+JURA_AI_PROVIDER=openai            # or anthropic
+JURA_AI_MODEL=gpt-4o-mini          # or e.g. claude-sonnet-4-5 for Anthropic
+JURA_OPENAI_ENABLED=true
+JURA_OPENAI_API_KEY=sk-...
+# For Anthropic instead:
+JURA_ANTHROPIC_ENABLED=true
+JURA_ANTHROPIC_API_KEY=sk-ant-...
+JURA_AI_SIGNATURES_ENABLED=true    # turn on real AI calls for signature suggestions
+```
+
+**Generate signature with AI** (on a finding page) sends the finding's metadata and a
+truncated (max 8 KB) read of the file to the configured provider and asks it to propose a
+`hash` or `combo` signature. The result is stored as a **suggestion**
+(`/signatures/suggestions`, also shown inline on the finding page) — nothing is ever written
+to the real `malware_signatures` table automatically. Review the suggestion and click
+**Create signature** to save it as a real, enabled signature through the normal manual-save
+form. If `JURA_AI_SIGNATURES_ENABLED` is off, no provider is configured, or the AI request
+fails, a draft placeholder is created instead so the action never silently does nothing or
+errors out; a malformed (non-JSON) AI response is kept as a `needs_review` suggestion with
+the raw text preserved rather than being discarded.
+
+### Automatic quarantine of obvious shells
+
+```env
+JURA_AUTO_QUARANTINE_OBVIOUS_SHELLS=true   # default: false
+```
+
+When enabled, right after each scan Jura automatically quarantines a **new, critical-risk**
+finding if either:
+
+* it **matched a known signature** (built-in or custom, in `malware_signatures`) — a positive
+  identification, not just a heuristic score; or
+* the file's upload could be traced to a **specific IP address via recent access logs, and
+  that IP is not in Trusted IPs** — i.e. it was very likely dropped by an attacker, not
+  deployed by an admin.
+
+A critical finding that matches neither condition (no signature, and either no IP could be
+correlated from the logs, or the IP is trusted) is left as `new` for manual review — this is
+deliberately conservative because heuristic-only detections without a positive signal can be
+false positives. Quarantine (not permanent deletion) is used, so an auto-quarantined file can
+always be restored from `/quarantine` if it turns out to be a false positive. Every
+auto-quarantine action is also sent as a Telegram alert (independent of the other notification
+toggles above) if Telegram is configured, and the reason (matched signature name, or the
+untrusted IP) is recorded in the quarantine item for the audit trail.
+
 ## Incident import
 
 The **Incidents** panel page imports incident reports in the `jura-server-guard-incident`

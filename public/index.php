@@ -1,7 +1,7 @@
 <?php
 function utc_timestamp(string $timestamp): int { return strtotime($timestamp . ' UTC') ?: strtotime($timestamp) ?: time(); }
 require dirname(__DIR__).'/vendor/autoload.php';
-use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService;
+use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService; use App\Modules\Ai\SignatureSuggestionService;
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 try { DB::pdo(); } catch (Throwable $e) { echo 'Database not initialized. Run php artisan migrate.'; exit; }
@@ -94,7 +94,15 @@ if ($path === '/signatures/toggle' && $method==='POST') { DB::statement('UPDATE 
 if ($path === '/signatures/delete' && $method==='POST') { DB::statement('DELETE FROM malware_signatures WHERE id=?',[(int)$_POST['id']]); redirect('/signatures'); }
 if ($path === '/signatures/duplicate' && $method==='POST') { $r=DB::first('SELECT * FROM malware_signatures WHERE id=?',[(int)$_POST['id']]); if($r) DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,target_paths,exclude_paths,required_hits,enabled,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[$r['name'].' copy',$r['slug'].'-copy-'.time(),$r['description'],$r['risk'],$r['type'],$r['pattern_type'],$r['pattern_json'],$r['target_extensions'],$r['target_paths'],$r['exclude_paths'],$r['required_hits'],0,'manual',now(),now()]); redirect('/signatures'); }
 if ($path === '/signatures/save' && $method==='POST') { $id=(int)($_POST['id']??0); $slug=$_POST['slug'] ?: strtolower(preg_replace('/[^a-z0-9]+/i','-',$_POST['name'])); if($id) DB::statement('UPDATE malware_signatures SET name=?,slug=?,description=?,risk=?,type=?,pattern_type=?,pattern_json=?,source=?,updated_at=? WHERE id=?',[$_POST['name'],$slug,$_POST['description'],$_POST['risk'],$_POST['type'],$_POST['pattern_type'],$_POST['pattern_json'],'manual',now(),$id]); else $id=DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,enabled,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?,?)',[$_POST['name'],$slug,$_POST['description'],$_POST['risk'],$_POST['type'],$_POST['pattern_type'],$_POST['pattern_json'],'[]','manual',now(),now()]); redirect('/signatures/'.$id); }
-if ($path === '/finding/signature-suggest' && $method==='POST') { $id=(int)$_POST['id']; $f=DB::first('SELECT * FROM findings WHERE id=?',[$id]); if($f) DB::insert('INSERT INTO signature_suggestions (finding_id,source_file_path,source_file_sha256,ai_provider,model,status,suggested_name,suggested_risk,suggested_type,suggested_pattern_type,suggested_pattern_json,explanation,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[$id,$f['path'],$f['sha256'],env_value('JURA_AI_PROVIDER','openai'),env_value('JURA_AI_MODEL',''),'draft','Draft from finding '.$id,$f['risk'],$f['type'],'combo','{}','Warning: review before sending snippets to AI. Draft only; not enabled automatically.',now(),now()]); redirect('/findings/'.$id); }
+if ($path === '/finding/signature-suggest' && $method==='POST') { $id=(int)$_POST['id']; if(DB::first('SELECT id FROM findings WHERE id=?',[$id])) { try { (new SignatureSuggestionService())->suggest($id); } catch (Throwable $e) {} } redirect('/findings/'.$id); }
+if ($path === '/signatures/suggestions') { echo view('signatures.suggestions', ['suggestions'=>DB::select('SELECT ss.*, f.path finding_path FROM signature_suggestions ss LEFT JOIN findings f ON f.id=ss.finding_id ORDER BY ss.id DESC LIMIT 200')]); exit; }
+if ($path === '/signatures/create-from-suggestion') {
+    $sid = (int)($_GET['id'] ?? 0);
+    $s = DB::first('SELECT * FROM signature_suggestions WHERE id=?', [$sid]);
+    if (!$s) redirect('/signatures/suggestions');
+    echo view('signatures.form', ['signature' => ['name' => $s['suggested_name'], 'slug' => 'ai-' . $sid . '-' . time(), 'risk' => $s['suggested_risk'], 'type' => $s['suggested_type'], 'pattern_type' => $s['suggested_pattern_type'], 'pattern_json' => $s['suggested_pattern_json'], 'description' => $s['explanation']], 'preview' => '']);
+    exit;
+}
 if ($path === '/finding/create-signature' && $method==='POST') { $f=DB::first('SELECT * FROM findings WHERE id=?',[(int)$_POST['id']]); $hasHash=!empty($f['sha256']); $preview=($f&&is_readable($f['path']))?file_get_contents($f['path'],false,null,0,min(config('guard.max_file_read_bytes'),65536)):''; echo view('signatures.form',['signature'=>['name'=>'Signature from finding '.$f['id'],'slug'=>'finding-'.$f['id'].'-'.time(),'risk'=>$f['risk'],'type'=>$f['type'],'pattern_type'=>$hasHash?'hash':'combo','pattern_json'=>$hasHash?json_encode(['sha256'=>[$f['sha256']]]):'{}','description'=>$f['description']],'preview'=>$preview]); exit; }
 
 function log_filters(): array {
@@ -226,7 +234,7 @@ if (preg_match('#^/signatures/(\d+)$#',$path,$m)) { $sig=DB::first('SELECT * FRO
 if (preg_match('#^/findings/(\d+)$#',$path,$m)) {
     $f=DB::first('SELECT f.*,s.name site_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id WHERE f.id=?',[(int)$m[1]]);
     $elsewhere = (!empty($f['sha256'])) ? DB::select('SELECT fs.path, fs.is_missing, fs.last_seen_at, s.name site_name, u.name user_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE fs.sha256=? AND fs.path<>? ORDER BY fs.last_seen_at DESC LIMIT 100', [$f['sha256'], $f['path']]) : [];
-    echo view('findings.show',['finding'=>$f,'events'=>DB::select('SELECT * FROM log_events WHERE raw_line LIKE ? OR uri LIKE ? ORDER BY id DESC LIMIT 50',['%'.basename($f['path']??'').'%','%'.basename($f['path']??'').'%']),'preview'=>($f&&is_readable($f['path']))?file_get_contents($f['path'],false,null,0,min(config('guard.max_file_read_bytes'),65536)):'','elsewhere'=>$elsewhere]);
+    echo view('findings.show',['finding'=>$f,'events'=>DB::select('SELECT * FROM log_events WHERE raw_line LIKE ? OR uri LIKE ? ORDER BY id DESC LIMIT 50',['%'.basename($f['path']??'').'%','%'.basename($f['path']??'').'%']),'preview'=>($f&&is_readable($f['path']))?file_get_contents($f['path'],false,null,0,min(config('guard.max_file_read_bytes'),65536)):'','elsewhere'=>$elsewhere,'aiSuggestions'=>DB::select('SELECT * FROM signature_suggestions WHERE finding_id=? ORDER BY id DESC',[(int)$m[1]])]);
     exit;
 }
 if (preg_match('#^/incidents/(\d+)$#',$path,$m)) {
