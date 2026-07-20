@@ -406,4 +406,12 @@ return [
     'Create signature from this file' => 'Создать сигнатуру из этого файла',
     'Not found on this server (not scanned, or was never hashed).' => 'Не найден на этом сервере (не сканировался или хеш не вычислялся).',
     'Preview' => 'Предпросмотр',
+    'Select all :n matching current filter' => 'Выбрать все :n, соответствующие фильтру',
+    'Quarantine selected' => 'В карантин выбранные',
+    'Delete selected' => 'Удалить выбранные',
+    'Nothing selected.' => 'Ничего не выбрано.',
+    'Move :n file(s) to quarantine?' => 'Переместить :n файл(ов) в карантин?',
+    'PERMANENTLY delete :n file(s)? This cannot be undone.' => 'БЕЗВОЗВРАТНО удалить :n файл(ов)? Это действие нельзя отменить.',
+    'Quarantined: :ok, failed: :fail' => 'В карантин перемещено: :ok, не удалось: :fail',
+    'Deleted: :ok, failed: :fail' => 'Удалено: :ok, не удалось: :fail',
 ];

@@ -158,6 +158,26 @@ For example:
 
 The original SHA-256, owner, group, permissions, mtime, original path, and quarantine path are stored in `quarantine_items`.
 
+### Bulk quarantine and delete from the Findings page
+
+When `JURA_WEB_ACTIONS_ENABLED=true`, the **Findings** page shows a checkbox per row plus
+"Quarantine selected" and "Delete selected" buttons, so a mass-infection incident (dozens or
+hundreds of matched webshells from one signature) can be cleaned up in one action instead of
+one file at a time. If more findings match the current filter than are shown on the page (the
+list is capped at 500 rows), a **Select all N matching current filter** checkbox applies the
+action to every matching finding server-side, not just the visible ones.
+
+**Quarantine** moves the file into the quarantine directory as before (reversible via
+**Restore**). **Delete** is new and permanent: the file is captured into `quarantine_items`
+(SHA-256, owner, permissions, path, reason) for the audit trail exactly like quarantine, then
+immediately removed from disk with no way to restore it — the finding and quarantine item are
+both marked `deleted`. Both actions require an explicit confirmation dialog showing how many
+files will be affected, and both are always disabled unless `JURA_WEB_ACTIONS_ENABLED=true`
+(same gate as the existing single-file quarantine action).
+
+The **User** filter field on the Findings page also autocompletes from every known account
+name as you type, so you don't need to remember or retype the exact ISPmanager username.
+
 ## Turning a finding into a signature, and cross-site search
 
 On a finding page, **Create signature from this finding** now pre-fills a ready-to-save

@@ -406,4 +406,12 @@ return [
     'Create signature from this file' => 'Створити сигнатуру з цього файлу',
     'Not found on this server (not scanned, or was never hashed).' => 'Не знайдено на цьому сервері (не сканувався або хеш не обчислювався).',
     'Preview' => 'Попередній перегляд',
+    'Select all :n matching current filter' => 'Вибрати всі :n, що відповідають фільтру',
+    'Quarantine selected' => 'У карантин вибрані',
+    'Delete selected' => 'Видалити вибрані',
+    'Nothing selected.' => 'Нічого не вибрано.',
+    'Move :n file(s) to quarantine?' => 'Перемістити :n файл(и/ів) у карантин?',
+    'PERMANENTLY delete :n file(s)? This cannot be undone.' => 'БЕЗПОВОРОТНО видалити :n файл(и/ів)? Цю дію не можна скасувати.',
+    'Quarantined: :ok, failed: :fail' => 'У карантин переміщено: :ok, не вдалося: :fail',
+    'Deleted: :ok, failed: :fail' => 'Видалено: :ok, не вдалося: :fail',
 ];

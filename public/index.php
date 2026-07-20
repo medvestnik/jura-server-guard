@@ -51,15 +51,25 @@ function send_csv(string $filename, array $rows): void {
     if ($rows) { fputcsv($out, array_keys($rows[0])); foreach ($rows as $row) fputcsv($out, $row); }
     fclose($out); exit;
 }
-function finding_filters(): array {
+function finding_filters(?array $source = null): array {
+    $source = $source ?? $_GET;
     $where=[]; $params=[];
-    foreach (['risk'=>'f.risk','status'=>'f.status','type'=>'f.type'] as $key=>$col) if (($_GET[$key]??'')!=='') { $where[]="$col=?"; $params[]=$_GET[$key]; }
-    if (($_GET['user']??'')!=='') { $where[]='u.name=?'; $params[]=$_GET['user']; }
-    if (($_GET['site']??'')!=='') { $where[]='s.name=?'; $params[]=$_GET['site']; }
-    if (($_GET['path']??'')!=='') { $where[]='f.path LIKE ?'; $params[]='%'.$_GET['path'].'%'; }
-    if (($_GET['date_from']??'')!=='') { $where[]='f.last_seen_at >= ?'; $params[]=$_GET['date_from'].' 00:00:00'; }
-    if (($_GET['date_to']??'')!=='') { $where[]='f.last_seen_at <= ?'; $params[]=$_GET['date_to'].' 23:59:59'; }
+    foreach (['risk'=>'f.risk','status'=>'f.status','type'=>'f.type'] as $key=>$col) if (($source[$key]??'')!=='') { $where[]="$col=?"; $params[]=$source[$key]; }
+    if (($source['user']??'')!=='') { $where[]='u.name=?'; $params[]=$source['user']; }
+    if (($source['site']??'')!=='') { $where[]='s.name=?'; $params[]=$source['site']; }
+    if (($source['path']??'')!=='') { $where[]='f.path LIKE ?'; $params[]='%'.$source['path'].'%'; }
+    if (($source['date_from']??'')!=='') { $where[]='f.last_seen_at >= ?'; $params[]=$source['date_from'].' 00:00:00'; }
+    if (($source['date_to']??'')!=='') { $where[]='f.last_seen_at <= ?'; $params[]=$source['date_to'].' 23:59:59'; }
     return [$where ? 'WHERE '.implode(' AND ', $where) : '', $params];
+}
+
+function resolve_bulk_finding_ids(): array {
+    if (($_POST['select_all_filtered'] ?? '') === '1') {
+        [$w,$p] = finding_filters($_POST);
+        $rows = DB::select("SELECT f.id FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id $w LIMIT 5000", $p);
+        return array_map(fn($r)=>(int)$r['id'], $rows);
+    }
+    return array_values(array_unique(array_filter(array_map('intval', (array)($_POST['ids'] ?? [])))));
 }
 
 function file_change_filters(): array {
@@ -101,6 +111,18 @@ if ($path === '/finding/ignore' && $method==='POST') { DB::statement('UPDATE fin
 if ($path === '/finding/allowlist' && $method==='POST') { $f=DB::first('SELECT * FROM findings WHERE id=?',[(int)$_POST['id']]); if($f) DB::insert('INSERT INTO allowlist_rules (name,path_pattern,sha256,reason,enabled,created_at,updated_at) VALUES (?,?,?,?,1,?,?)',['Web allowlist '.$f['id'],$f['path'],$f['sha256'],'Added from finding page',now(),now()]); redirect('/rules'); }
 if ($path === '/finding/quarantine' && $method==='POST' && config('guard.web_actions_enabled')) { (new QuarantineService())->quarantine((int)$_POST['id'], 'Web panel quarantine'); redirect('/quarantine'); }
 if ($path === '/quarantine/restore' && $method==='POST' && config('guard.web_actions_enabled')) { (new QuarantineService())->restore((int)$_POST['id']); redirect('/quarantine'); }
+if ($path === '/findings/bulk-quarantine' && $method==='POST' && config('guard.web_actions_enabled')) {
+    @set_time_limit(300);
+    $ids = resolve_bulk_finding_ids(); $svc = new QuarantineService(); $ok=0; $fail=0;
+    foreach ($ids as $id) { try { $svc->quarantine($id, 'Bulk web panel quarantine'); $ok++; } catch (Throwable $e) { $fail++; } }
+    redirect('/findings?'.http_build_query(array_merge($_POST['back_query'] ?? [], ['bulk_result'=>'quarantine','bulk_ok'=>$ok,'bulk_fail'=>$fail])));
+}
+if ($path === '/findings/bulk-delete' && $method==='POST' && config('guard.web_actions_enabled')) {
+    @set_time_limit(300);
+    $ids = resolve_bulk_finding_ids(); $svc = new QuarantineService(); $ok=0; $fail=0;
+    foreach ($ids as $id) { try { $svc->delete($id, 'Bulk web panel delete'); $ok++; } catch (Throwable $e) { $fail++; } }
+    redirect('/findings?'.http_build_query(array_merge($_POST['back_query'] ?? [], ['bulk_result'=>'delete','bulk_ok'=>$ok,'bulk_fail'=>$fail])));
+}
 if ($path === '/rules/toggle' && $method==='POST') { $table=($_POST['table']??'rules')==='allowlist_rules'?'allowlist_rules':'rules'; DB::statement("UPDATE $table SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?", [now(), (int)$_POST['id']]); redirect('/rules'); }
 $threatIpClassifications = ['scanner','bruteforce','webshell_access','bot','direct_login','manual','unknown'];
 if ($path === '/threat-ips/save' && $method === 'POST') {
@@ -281,7 +303,7 @@ $data = match ($path) {
  '/' => ['dashboard.index', ['activeScan'=>scan_active_context()['run'],'activeLock'=>scan_active_context()['lock'],'last'=>DB::first('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1'),'users'=>DB::first('SELECT COUNT(*) c FROM users')['c']??0,'sites'=>DB::first('SELECT COUNT(*) c FROM sites')['c']??0,'new'=>DB::first("SELECT COUNT(*) c FROM findings WHERE status='new'")['c']??0,'crit'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='critical' AND status='new'")['c']??0,'high'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='high' AND status='new'")['c']??0,'q'=>DB::first("SELECT COUNT(*) c FROM quarantine_items WHERE status='quarantined'")['c']??0,'logs'=>DB::select('SELECT l.*, s.name site_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id ORDER BY l.id DESC LIMIT 10'),'threatIps'=>(function(){ $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return $ips; })(),'scanRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]],
  '/users' => ['users.index',['scanCtx'=>scan_active_context(),'users'=>DB::select('SELECT u.*, COUNT(DISTINCT s.id) sites_count, COUNT(f.id) findings_count, MAX(s.last_scan_at) last_scan_at FROM users u LEFT JOIN sites s ON s.server_user_id=u.id LEFT JOIN findings f ON f.site_id=s.id GROUP BY u.id ORDER BY u.name')]],
  '/sites' => ['sites.index',['scanCtx'=>scan_active_context(),'sites'=>DB::select('SELECT s.*, u.name user_name, COUNT(f.id) findings_count, MAX(CASE f.risk WHEN "critical" THEN 4 WHEN "high" THEN 3 WHEN "medium" THEN 2 ELSE 1 END) risk_score FROM sites s LEFT JOIN users u ON u.id=s.server_user_id LEFT JOIN findings f ON f.site_id=s.id AND f.status="new" GROUP BY s.id ORDER BY s.path')]],
- '/findings' => ['findings.index',(function(){ [$w,$p]=finding_filters(); return ['findings'=>DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY CASE risk WHEN "critical" THEN 1 WHEN "high" THEN 2 WHEN "medium" THEN 3 ELSE 4 END, f.id DESC LIMIT 500',$p)]; })()],
+ '/findings' => ['findings.index',(function(){ [$w,$p]=finding_filters(); $total=(int)(DB::first('SELECT COUNT(*) c FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w, $p)['c'] ?? 0); return ['findings'=>DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY CASE risk WHEN "critical" THEN 1 WHEN "high" THEN 2 WHEN "medium" THEN 3 ELSE 4 END, f.id DESC LIMIT 500',$p), 'total'=>$total, 'user_names'=>array_column(DB::select('SELECT DISTINCT name FROM users ORDER BY name'), 'name')]; })()],
  '/logs' => ['logs.index',(function(){ [$w,$p]=log_filters(); $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return ['events'=>DB::select('SELECT l.*, s.name site_name, u.name user_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY l.id DESC LIMIT 1000',$p),'threatIps'=>$ips]; })()],
  '/file-changes' => ['file-changes.index',(function(){ [$w,$p]=file_change_filters(); return ['changes'=>DB::select('SELECT fs.*, s.name site_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id '.$w.' ORDER BY COALESCE(fs.last_changed_at,fs.first_seen_at,fs.updated_at) DESC LIMIT 1000',$p), 'lastRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]; })()],
  '/quarantine' => ['quarantine.index',['items'=>DB::select('SELECT * FROM quarantine_items ORDER BY id DESC')]],
