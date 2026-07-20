@@ -65,8 +65,8 @@ function finding_filters(?array $source = null): array {
 
 function resolve_bulk_finding_ids(): array {
     if (($_POST['select_all_filtered'] ?? '') === '1') {
-        [$w,$p] = finding_filters($_POST);
-        $rows = DB::select("SELECT f.id FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id $w LIMIT 5000", $p);
+        [$w,$p] = finding_filters((array)($_POST['back_query'] ?? []));
+        $rows = DB::select("SELECT f.id FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id $w", $p);
         return array_map(fn($r)=>(int)$r['id'], $rows);
     }
     return array_values(array_unique(array_filter(array_map('intval', (array)($_POST['ids'] ?? [])))));

@@ -27,7 +27,9 @@ class QuarantineService
     {
         $id = $this->quarantine($findingId, $reason);
         $item = DB::first('SELECT * FROM quarantine_items WHERE id=?', [$id]);
-        if ($item && is_file($item['quarantine_path'])) @unlink($item['quarantine_path']);
+        if (!$item || !is_file($item['quarantine_path']) || !@unlink($item['quarantine_path'])) {
+            throw new RuntimeException('Failed to permanently delete quarantined file; it remains quarantined and can be restored.');
+        }
         DB::statement('UPDATE quarantine_items SET status=?, updated_at=? WHERE id=?', ['deleted', now(), $id]);
         DB::statement('UPDATE findings SET status=?, updated_at=? WHERE id=?', ['deleted', now(), $findingId]);
         return $id;
