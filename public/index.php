@@ -1,7 +1,7 @@
 <?php
 function utc_timestamp(string $timestamp): int { return strtotime($timestamp . ' UTC') ?: strtotime($timestamp) ?: time(); }
 require dirname(__DIR__).'/vendor/autoload.php';
-use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService; use App\Modules\Ai\SignatureSuggestionService;
+use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService; use App\Modules\Ai\SignatureSuggestionService; use App\Modules\Ai\ChatService;
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 try { DB::pdo(); } catch (Throwable $e) { echo 'Database not initialized. Run php artisan migrate.'; exit; }
@@ -104,6 +104,31 @@ if ($path === '/signatures/create-from-suggestion') {
     exit;
 }
 if ($path === '/finding/create-signature' && $method==='POST') { $f=DB::first('SELECT * FROM findings WHERE id=?',[(int)$_POST['id']]); $hasHash=!empty($f['sha256']); $preview=($f&&is_readable($f['path']))?file_get_contents($f['path'],false,null,0,min(config('guard.max_file_read_bytes'),65536)):''; echo view('signatures.form',['signature'=>['name'=>'Signature from finding '.$f['id'],'slug'=>'finding-'.$f['id'].'-'.time(),'risk'=>$f['risk'],'type'=>$f['type'],'pattern_type'=>$hasHash?'hash':'combo','pattern_json'=>$hasHash?json_encode(['sha256'=>[$f['sha256']]]):'{}','description'=>$f['description']],'preview'=>$preview]); exit; }
+
+if ($path === '/ai-chat') {
+    if (!config('guard.ai_chat_enabled')) redirect('/');
+    $adminId = (int) ($_SESSION['admin_id'] ?? 0);
+    echo view('ai_chat.index', ['messages' => (new ChatService())->history($adminId)]);
+    exit;
+}
+if ($path === '/ai-chat/send' && $method === 'POST' && config('guard.ai_chat_enabled')) {
+    $adminId = (int) ($_SESSION['admin_id'] ?? 0);
+    $text = trim((string) ($_POST['message'] ?? ''));
+    if ($text !== '') { try { (new ChatService())->send($adminId, $text); } catch (Throwable $e) {} }
+    redirect('/ai-chat');
+}
+if ($path === '/ai-chat/confirm' && $method === 'POST' && config('guard.ai_chat_enabled')) {
+    (new ChatService())->resolvePending((int) ($_POST['id'] ?? 0), true);
+    redirect('/ai-chat');
+}
+if ($path === '/ai-chat/cancel' && $method === 'POST' && config('guard.ai_chat_enabled')) {
+    (new ChatService())->resolvePending((int) ($_POST['id'] ?? 0), false);
+    redirect('/ai-chat');
+}
+if ($path === '/ai-chat/clear' && $method === 'POST' && config('guard.ai_chat_enabled')) {
+    (new ChatService())->clear((int) ($_SESSION['admin_id'] ?? 0));
+    redirect('/ai-chat');
+}
 
 function log_filters(): array {
     $where=[]; $params=[];

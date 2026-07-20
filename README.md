@@ -349,6 +349,21 @@ auto-quarantine action is also sent as a Telegram alert (independent of the othe
 toggles above) if Telegram is configured, and the reason (matched signature name, or the
 untrusted IP) is recorded in the quarantine item for the audit trail.
 
+### AI chat
+
+```env
+JURA_AI_CHAT_ENABLED=true   # default: false
+```
+
+Adds an **AI chat** link to the nav bar. The assistant can search findings, look up one
+finding's details, and — only ever with an explicit confirmation step, never immediately —
+quarantine a finding, permanently delete a finding, or add an IP to the trusted list. When it
+proposes one of those three actions, the conversation shows a **Confirm** / **Cancel** card
+with the exact action and arguments; nothing runs until you click Confirm, and Cancel leaves
+the finding/IP untouched. Read-only lookups (search, inspect) run immediately without a
+confirmation step since they can't change anything. Conversation history is kept per admin
+account and can be cleared from the chat page at any time.
+
 ## Incident import
 
 The **Incidents** panel page imports incident reports in the `jura-server-guard-incident`
@@ -368,12 +383,19 @@ php artisan guard:incident-import incident.json
 php artisan guard:incident-list
 ```
 
-Threat IPs are upserted by `ip`, signatures by `slug`, file IOCs by `sha256` — importing
-the same file again updates existing records instead of duplicating them. Each incident's
-detail page shows its threat IPs, signatures, and file IOCs, cross-references each file IOC
-against already-scanned `file_snapshots` by SHA-256 (so you immediately see whether a known-bad
-file is present anywhere on the server), and resolves the incident's affected site names
-against the current inventory with a link to that site's findings.
+Threat IPs are upserted by `ip`, signatures by `slug`, file IOCs by `sha256` when known —
+importing the same file again updates existing records instead of duplicating them. Each
+incident's detail page shows its threat IPs, signatures, and file IOCs, cross-references each
+file IOC against already-scanned `file_snapshots` by SHA-256 (so you immediately see whether
+a known-bad file is present anywhere on the server), and resolves the incident's affected
+site names against the current inventory with a link to that site's findings.
+
+A `file_ioc` doesn't strictly need a `sha256` — it's common to write up an incident before a
+file's hash has actually been collected (e.g. investigation notes captured its filename,
+size, and role, but the sample wasn't hashed yet). In that case, set `"sha256": null` and
+provide `name` (or `names`) instead; the entry is upserted by name+size+role until a later
+import fills in the real hash. Only when a `sha256` value **is** present must it be a valid
+64-character hex string.
 
 ## Allowlist
 

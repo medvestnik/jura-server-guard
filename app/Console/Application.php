@@ -117,6 +117,7 @@ class Application
         $this->ensureRestoreActionsTable($driver);
         $this->ensureThreatIpsTable($driver);
         $this->ensureIncidentTables($driver);
+        $this->ensureAiChatTable($driver);
 
         foreach (DB::select('SELECT id,path FROM file_snapshots WHERE path_hash IS NULL OR path_hash = ?', ['']) as $row) DB::statement('UPDATE file_snapshots SET path_hash=? WHERE id=?', [hash('sha256', (string)$row['path']), $row['id']]);
         foreach (DB::select('SELECT id,path,type,rule_key,fingerprint,sha256 FROM findings WHERE path_hash IS NULL OR path_hash = ? OR finding_hash IS NULL OR finding_hash = ?', ['', '']) as $row) {
@@ -240,16 +241,43 @@ class Application
     {
         if ($driver === 'mysql') {
             DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incidents (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, external_id VARCHAR(191) NOT NULL, title VARCHAR(255) NOT NULL, severity VARCHAR(32) NOT NULL DEFAULT 'medium', confidence VARCHAR(32) NULL, status VARCHAR(64) NULL, summary TEXT NULL, server_hostname VARCHAR(255) NULL, timeline_json LONGTEXT NULL, affected_assets_json LONGTEXT NULL, path_indicators_json LONGTEXT NULL, excluded_ips_json LONGTEXT NULL, response_actions_json LONGTEXT NULL, import_policy_json LONGTEXT NULL, raw_json LONGTEXT NULL, source_file VARCHAR(255) NULL, imported_at DATETIME NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_incidents_external_id(external_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
-            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_iocs (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, incident_id BIGINT UNSIGNED NULL, sha256 CHAR(64) NOT NULL, size BIGINT NULL, names_json LONGTEXT NULL, role VARCHAR(128) NULL, risk VARCHAR(32) NULL, confidence VARCHAR(32) NULL, scope VARCHAR(255) NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_incident_file_iocs_sha256(sha256), INDEX incident_file_iocs_incident_id_idx(incident_id), CONSTRAINT incident_file_iocs_incident_fk FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE SET NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_iocs (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, incident_id BIGINT UNSIGNED NULL, sha256 CHAR(64) NULL, size BIGINT NULL, names_json LONGTEXT NULL, role VARCHAR(128) NULL, risk VARCHAR(32) NULL, confidence VARCHAR(32) NULL, scope VARCHAR(255) NULL, dedup_key CHAR(64) NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_incident_file_iocs_sha256(sha256), UNIQUE KEY uniq_incident_file_iocs_dedup_key(dedup_key), INDEX incident_file_iocs_incident_id_idx(incident_id), CONSTRAINT incident_file_iocs_incident_fk FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE SET NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         } else {
             DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incidents (id INTEGER PRIMARY KEY AUTOINCREMENT, external_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, severity TEXT NOT NULL DEFAULT 'medium', confidence TEXT NULL, status TEXT NULL, summary TEXT NULL, server_hostname TEXT NULL, timeline_json TEXT NULL, affected_assets_json TEXT NULL, path_indicators_json TEXT NULL, excluded_ips_json TEXT NULL, response_actions_json TEXT NULL, import_policy_json TEXT NULL, raw_json TEXT NULL, source_file TEXT NULL, imported_at TEXT NULL, created_at TEXT, updated_at TEXT)");
-            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_iocs (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NULL, sha256 TEXT NOT NULL UNIQUE, size INTEGER NULL, names_json TEXT NULL, role TEXT NULL, risk TEXT NULL, confidence TEXT NULL, scope TEXT NULL, created_at TEXT, updated_at TEXT)");
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_iocs (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NULL, sha256 TEXT NULL UNIQUE, size INTEGER NULL, names_json TEXT NULL, role TEXT NULL, risk TEXT NULL, confidence TEXT NULL, scope TEXT NULL, dedup_key TEXT NULL UNIQUE, created_at TEXT, updated_at TEXT)");
         }
         $this->ensureColumn('malware_signatures', 'incident_id', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
+        $this->ensureFileIocSha256Nullable($driver);
         $this->ensureIncidentLinkTables($driver);
         $this->ensureTrustedIpsTable($driver);
         $this->ensureCronMonitorTable($driver);
         $this->ensureNotificationsTable($driver);
+    }
+
+    /**
+     * incident_file_iocs.sha256 used to be NOT NULL; some incident reports document a file IOC
+     * by name/role before its hash has been collected. Relaxes existing installations to match
+     * the now-nullable column in the CREATE TABLE definitions above, and backfills dedup_key
+     * (the new upsert identity, sha256 when known, otherwise name+size+role) for old rows.
+     */
+    private function ensureFileIocSha256Nullable(string $driver): void
+    {
+        if ($driver === 'mysql') {
+            try { DB::pdo()->exec('ALTER TABLE incident_file_iocs MODIFY sha256 CHAR(64) NULL'); } catch (\Throwable) {}
+            $this->ensureColumn('incident_file_iocs', 'dedup_key', 'CHAR(64) NULL');
+            try { DB::pdo()->exec('ALTER TABLE incident_file_iocs ADD UNIQUE KEY uniq_incident_file_iocs_dedup_key(dedup_key)'); } catch (\Throwable) {}
+        } else {
+            $col = null;
+            foreach (DB::select('PRAGMA table_info(incident_file_iocs)') as $c) if ($c['name'] === 'sha256') $col = $c;
+            if ($col && (int) $col['notnull'] === 1) {
+                DB::pdo()->exec('CREATE TABLE incident_file_iocs_new (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NULL, sha256 TEXT NULL UNIQUE, size INTEGER NULL, names_json TEXT NULL, role TEXT NULL, risk TEXT NULL, confidence TEXT NULL, scope TEXT NULL, dedup_key TEXT NULL UNIQUE, created_at TEXT, updated_at TEXT)');
+                DB::pdo()->exec("INSERT INTO incident_file_iocs_new (id,incident_id,sha256,size,names_json,role,risk,confidence,scope,dedup_key,created_at,updated_at) SELECT id,incident_id,sha256,size,names_json,role,risk,confidence,scope,LOWER(sha256),created_at,updated_at FROM incident_file_iocs");
+                DB::pdo()->exec('DROP TABLE incident_file_iocs');
+                DB::pdo()->exec('ALTER TABLE incident_file_iocs_new RENAME TO incident_file_iocs');
+            }
+            $this->ensureColumn('incident_file_iocs', 'dedup_key', 'TEXT NULL');
+        }
+        DB::pdo()->exec('UPDATE incident_file_iocs SET dedup_key = LOWER(sha256) WHERE dedup_key IS NULL AND sha256 IS NOT NULL');
     }
 
     private function ensureTrustedIpsTable(string $driver): void
@@ -285,6 +313,12 @@ class Application
             DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_signature_links (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NOT NULL, signature_id INTEGER NOT NULL, created_at TEXT, UNIQUE(incident_id, signature_id))");
             DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_ioc_links (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NOT NULL, file_ioc_id INTEGER NOT NULL, created_at TEXT, UNIQUE(incident_id, file_ioc_id))");
         }
+    }
+
+    private function ensureAiChatTable(string $driver): void
+    {
+        if ($driver === 'mysql') DB::pdo()->exec("CREATE TABLE IF NOT EXISTS ai_chat_messages (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, admin_user_id BIGINT UNSIGNED NULL, role VARCHAR(32) NOT NULL, content LONGTEXT NULL, tool_name VARCHAR(128) NULL, tool_arguments_json LONGTEXT NULL, tool_status VARCHAR(32) NULL, tool_result LONGTEXT NULL, created_at DATETIME NULL, INDEX ai_chat_messages_admin_user_idx(admin_user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        else DB::pdo()->exec("CREATE TABLE IF NOT EXISTS ai_chat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_user_id INTEGER NULL, role TEXT NOT NULL, content TEXT NULL, tool_name TEXT NULL, tool_arguments_json TEXT NULL, tool_status TEXT NULL, tool_result TEXT NULL, created_at TEXT)");
     }
 
     private function ensureColumn(string $table, string $column, string $definition): void
