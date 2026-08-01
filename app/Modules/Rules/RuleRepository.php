@@ -38,7 +38,7 @@ class RuleRepository
     {
         foreach ($this->allowlist() as $rule) {
             if (!empty($rule['sha256']) && $sha256 && hash_equals($rule['sha256'], $sha256)) return true;
-            if (!empty($rule['path_pattern']) && fnmatch($rule['path_pattern'], $path, FNM_PATHNAME | FNM_CASEFOLD)) return true;
+            if (!empty($rule['path_pattern']) && fnmatch($rule['path_pattern'], $path, FNM_CASEFOLD)) return true;
         }
         return false;
     }

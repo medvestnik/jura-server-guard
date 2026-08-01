@@ -291,7 +291,8 @@ class ScannerService
             if (!($options['include_old'] ?? config('guard.scan_old_dubl_by_default')) && (str_contains($lower, 'old') || str_contains($lower, 'dubl'))) $skip = true;
             if (!($options['include_storage'] ?? config('guard.scan_storage_by_default')) && $lower === 'storage') $skip = true;
             if (!($options['include_backups'] ?? false) && (str_contains($lower, 'backup') || str_contains($lower, 'bak'))) $skip = true;
-            foreach (config('guard.exclude_paths') as $pattern) if (fnmatch($pattern, $path.'/', FNM_PATHNAME|FNM_CASEFOLD)) $skip = true;
+            foreach (config('guard.exclude_paths') as $pattern) if (fnmatch($pattern, $path.'/', FNM_CASEFOLD)) $skip = true;
+            if (!($options['include_vendor'] ?? config('guard.scan_vendor_by_default'))) foreach (config('guard.exclude_vendor_paths') as $pattern) if (fnmatch($pattern, $path.'/', FNM_CASEFOLD)) $skip = true;
             if ($skip) { $this->skippedDirectories++; return false; }
             return true;
         });
@@ -455,7 +456,7 @@ class ScannerService
         if ($loaderEvidence) $out[] = ['risk'=>$allowed?'low':'critical','type'=>'packed_loader','rule_key'=>'self-reading-packed-loader','title'=>'Self-reading packed PHP loader','description'=>'Detected eval with gzuncompress/gzinflate, self-reading file_get_contents(__FILE__), and a negative substr offset or appended binary/compressed payload.','matched'=>[$loaderEvidence], 'log_ids'=>$logIds];
         $matched = [];
         foreach ($this->rules->enabledRules() as $r) {
-            $hit = match ($r['pattern_type']) { 'regex' => (bool)@preg_match($r['pattern'], $path), 'path' => fnmatch($r['pattern'], $path, FNM_PATHNAME | FNM_CASEFOLD) || fnmatch($r['pattern'], basename($path), FNM_CASEFOLD), default => $isPhp && stripos($content, $r['pattern']) !== false };
+            $hit = match ($r['pattern_type']) { 'regex' => (bool)@preg_match($r['pattern'], $path), 'path' => fnmatch($r['pattern'], $path, FNM_CASEFOLD) || fnmatch($r['pattern'], basename($path), FNM_CASEFOLD), default => $isPhp && stripos($content, $r['pattern']) !== false };
             if ($hit) $matched[] = $r;
         }
         $fnHits = array_values(array_filter($matched, fn($r)=>$r['type']==='suspicious_php'));
@@ -535,7 +536,7 @@ class ScannerService
     }
     private static ?array $defaultRulesCache = null;
     private function defaultRulesConfig(): array { return self::$defaultRulesCache ??= require base_path('rules/default-rules.php'); }
-    private function knownFalsePositivePath(string $path): bool { foreach ($this->defaultRulesConfig()['allowlist'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
+    private function knownFalsePositivePath(string $path): bool { foreach ($this->defaultRulesConfig()['allowlist'] as $p) if (fnmatch($p, $path, FNM_CASEFOLD)) return true; return false; }
     private function selfReadingPackedLoaderEvidence(string $content): ?array
     {
         if ($content === '') return null;
@@ -633,9 +634,9 @@ class ScannerService
     }
     private function suspiciousContent(string $content): bool { return (bool)preg_match('/(eval\s*\(|assert\s*\(|gzinflate\s*\(|base64_decode\s*\(|shell_exec\s*\(|passthru\s*\(|proc_open\s*\()/i', $content); }
     private function malwareLikeName(string $path): bool { return (bool)preg_match('/\/(gallery888|zebra|mah|compat-kuro|AuthControlIer|access\.policy|session\.manage|field\.api|[a-f0-9]{12,})\.php$/i', $path); }
-    private function suspiciousLocation(string $path): bool { foreach ($this->defaultRulesConfig()['suspicious_paths'] as $p) if (fnmatch($p, $path, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
-    private function criticalChange(string $rel): bool { foreach ($this->defaultRulesConfig()['critical_changes'] as $p) if (fnmatch($p, $rel, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
-    private function importantChange(string $rel): bool { $r=$this->defaultRulesConfig(); foreach (array_merge($r['critical_changes'],$r['important_changes']) as $p) if (fnmatch($p, $rel, FNM_PATHNAME|FNM_CASEFOLD)) return true; return false; }
+    private function suspiciousLocation(string $path): bool { foreach ($this->defaultRulesConfig()['suspicious_paths'] as $p) if (fnmatch($p, $path, FNM_CASEFOLD)) return true; return false; }
+    private function criticalChange(string $rel): bool { foreach ($this->defaultRulesConfig()['critical_changes'] as $p) if (fnmatch($p, $rel, FNM_CASEFOLD)) return true; return false; }
+    private function importantChange(string $rel): bool { $r=$this->defaultRulesConfig(); foreach (array_merge($r['critical_changes'],$r['important_changes']) as $p) if (fnmatch($p, $rel, FNM_CASEFOLD)) return true; return false; }
     private function maxRisk(array $rules): string { $order=['low'=>1,'medium'=>2,'high'=>3,'critical'=>4]; $risk='low'; foreach($rules as $r) if(($order[$r['risk']]??0)>($order[$risk]??0)) $risk=$r['risk']; return $risk; }
     private function raiseRisk(string $risk): string { return ['low'=>'medium','medium'=>'high','high'=>'critical','critical'=>'critical'][$risk] ?? 'high'; }
     private function relatedLogEventIds(string $path): array { $base = basename($path); if (!$base) return []; return array_map(fn($r)=>(int)$r['id'], DB::select("SELECT id FROM log_events WHERE uri LIKE ? AND NOT (LOWER(uri) LIKE '%delivery.png%' OR LOWER(uri) IN ('/delivery','/ua/delivery','/ru/delivery')) ORDER BY id DESC LIMIT 20", ['%'.$base.'%'])); }

@@ -13,12 +13,18 @@ return [
     ],
     'exclude_paths' => [
         '*/OLD/*', '*/old.*/*', '*/DUBL*/*', '*/dubl*/*', '*/*backup*/*',
-        '*/__MACOSX/*', '*/node_modules/*', '*/vendor/*', '*/storage/logs/*',
+        '*/__MACOSX/*', '*/node_modules/*', '*/storage/logs/*',
         '*/cache/*', '*/tmp/*', '*/temp/*',
     ],
+    // Composer's vendor/ contains live PHP code the webserver can execute (unlike node_modules,
+    // which is build-time-only JS tooling), so unlike the noise patterns above it's excluded via
+    // its own toggle (--include-vendor / JURA_SCAN_VENDOR_BY_DEFAULT) rather than unconditionally,
+    // for deep/paranoid audits where an attacker may have hidden a file inside it.
+    'exclude_vendor_paths' => ['*/vendor/*'],
     'exclude_site_names' => ['OLD', 'DUBL', 'DUBL*', 'OLD_*', '*_backup_*', '*backup*', '__MACOSX'],
     'scan_old_dubl_by_default' => bool_env('JURA_SCAN_OLD_DUBL_BY_DEFAULT', false),
     'scan_storage_by_default' => bool_env('JURA_SCAN_STORAGE_BY_DEFAULT', false),
+    'scan_vendor_by_default' => bool_env('JURA_SCAN_VENDOR_BY_DEFAULT', false),
     'max_files_per_site' => (int) env_value('JURA_MAX_FILES_PER_SITE', 200000),
     'max_scan_seconds_per_site' => (int) env_value('JURA_MAX_SCAN_SECONDS_PER_SITE', 300),
     'max_file_size_for_hash_mb' => (int) env_value('JURA_MAX_FILE_SIZE_FOR_HASH_MB', 50),
