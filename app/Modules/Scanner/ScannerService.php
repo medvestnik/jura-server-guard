@@ -301,13 +301,17 @@ class ScannerService
         return false;
     }
 
-    private function filteredIterator(string $root, array $options): RecursiveCallbackFilterIterator
+    private function filteredIterator(string $root, array $options, array $excludeDirs = [], array $excludeFiles = []): RecursiveCallbackFilterIterator
     {
         $dir = new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS);
-        return new RecursiveCallbackFilterIterator($dir, function ($current) use ($options) {
-            if (!$current->isDir()) return true;
-            if ($this->shouldSkipDirectory($current->getPathname(), $current->getFilename(), $options)) { $this->skippedDirectories++; return false; }
-            return true;
+        return new RecursiveCallbackFilterIterator($dir, function ($current) use ($options, $excludeDirs, $excludeFiles) {
+            $path = $current->getPathname();
+            if ($current->isDir()) {
+                if (isset($excludeDirs[$path])) return false;
+                if ($this->shouldSkipDirectory($path, $current->getFilename(), $options)) { $this->skippedDirectories++; return false; }
+                return true;
+            }
+            return !isset($excludeFiles[$path]);
         });
     }
 
@@ -318,31 +322,55 @@ class ScannerService
         return new RecursiveIteratorIterator($this->filteredIterator($root, $options));
     }
 
+    /** How many directory levels below a site root to look for nested priority directories
+     *  (e.g. wp-content/uploads) before giving up and leaving deeper ones in normal walk order. */
+    private const PRIORITY_SCAN_MAX_DEPTH = 6;
+
     /**
      * Walks a site root with likely-webshell-drop directories (tmp/cache/uploads/images/...)
      * visited before everything else, so a fresh shell surfaces early in a scan instead of
      * after the scanner has worked through a CMS's own (much larger, much less often abused)
-     * library/admin/module code.
+     * library/admin/module code. Priority directories are hoisted wherever they appear in the
+     * tree (e.g. WordPress's wp-content/uploads), not just at the site root, since their
+     * immediate parent is rarely priority-named itself.
      */
     private function orderedIterator(string $root, array $options): Iterator
     {
-        $rootFiles = []; $priorityDirs = []; $normalDirs = [];
+        $rootFiles = [];
         foreach (@scandir($root) ?: [] as $name) {
             if ($name === '.' || $name === '..') continue;
             $full = rtrim($root, '/') . '/' . $name;
             if (is_link($full)) continue;
-            if (is_dir($full)) {
-                if ($this->shouldSkipDirectory($full, $name, $options)) { $this->skippedDirectories++; continue; }
-                if ($this->isPriorityDirectory($name)) $priorityDirs[] = $full; else $normalDirs[] = $full;
-            } elseif (is_file($full)) {
-                $rootFiles[] = new SplFileInfo($full);
-            }
+            if (is_file($full)) $rootFiles[] = new SplFileInfo($full);
         }
+        $priorityDirs = [];
+        $this->collectPriorityDirectories($root, $options, 0, $priorityDirs);
+        $rootFilePaths = [];
+        foreach ($rootFiles as $f) $rootFilePaths[$f->getPathname()] = true;
+
         $append = new AppendIterator();
         $append->append(new ArrayIterator($rootFiles));
         foreach ($priorityDirs as $dir) $append->append(new RecursiveIteratorIterator($this->filteredIterator($dir, $options)));
-        foreach ($normalDirs as $dir) $append->append(new RecursiveIteratorIterator($this->filteredIterator($dir, $options)));
+        $append->append(new RecursiveIteratorIterator($this->filteredIterator($root, $options, $priorityDirs, $rootFilePaths)));
         return $append;
+    }
+
+    /** Recursively finds priority-named directories anywhere under $dir (bounded by depth),
+     *  keyed by absolute path so orderedIterator() can both walk them first and exclude their
+     *  subtrees from the normal walk that follows. Stops descending once a directory itself is
+     *  classified as priority, since it (and everything under it) is already covered by the
+     *  hoisted walk. */
+    private function collectPriorityDirectories(string $dir, array $options, int $depth, array &$found): void
+    {
+        if ($depth > self::PRIORITY_SCAN_MAX_DEPTH) return;
+        foreach (@scandir($dir) ?: [] as $name) {
+            if ($name === '.' || $name === '..') continue;
+            $full = rtrim($dir, '/') . '/' . $name;
+            if (!is_dir($full) || is_link($full)) continue;
+            if ($this->shouldSkipDirectory($full, $name, $options)) continue;
+            if ($this->isPriorityDirectory($name)) { $found[$full] = $full; continue; }
+            $this->collectPriorityDirectories($full, $options, $depth + 1, $found);
+        }
     }
 
     private function meta(string $path, ?array $previous = null, string $relative = '', array $options = []): array

@@ -44,13 +44,19 @@ class SignatureSweepService
                 $match = $this->engine->match($sig, $path, $relative, ['extension' => $ext, 'sha256' => $sha256], $content, $site['path']);
                 if (!$match) continue;
                 if ($sha256 === null) $sha256 = @hash_file('sha256', $path) ?: null;
-                $findingIds[] = $this->recordFinding((int) $site['id'], $path, $sha256, $sig, $match);
+                $findingId = $this->recordFinding((int) $site['id'], $path, $sha256, $sig, $match);
+                if ($findingId !== null) $findingIds[] = $findingId;
             }
         }
         return ['signature' => $sig, 'sites_scanned' => $sitesScanned, 'files_scanned' => $filesScanned, 'finding_ids' => $findingIds];
     }
 
-    private function recordFinding(int $siteId, string $path, ?string $sha256, array $sig, array $match): int
+    /**
+     * Mirrors ScannerService::upsertFinding()'s fingerprint/finding_hash derivation and
+     * ignored-finding check so a sweep match for the same file+signature dedupes with (and
+     * doesn't resurrect an ignored copy of) a finding a normal scan would have produced.
+     */
+    private function recordFinding(int $siteId, string $path, ?string $sha256, array $sig, array $match): ?int
     {
         $stat = @stat($path) ?: [];
         $size = $stat['size'] ?? 0;
@@ -58,17 +64,22 @@ class SignatureSweepService
         $owner = function_exists('posix_getpwuid') ? (posix_getpwuid($stat['uid'] ?? 0)['name'] ?? (string) ($stat['uid'] ?? '')) : (string) ($stat['uid'] ?? '');
         $permissions = substr(sprintf('%o', @fileperms($path)), -4);
         $pathHash = hash('sha256', $path);
-        $findingHash = hash('sha256', $path . '|webshell|signature-sweep|' . ($sha256 ?? ''));
+        $type = $sig['type'] ?? 'signature';
+        $ruleKey = 'signature:' . ($sig['slug'] ?? $sig['name']);
+        $fingerprint = hash('sha256', $path . '|' . $type . '|' . $ruleKey . '|' . ($sha256 ?? ''));
+        $findingHash = hash('sha256', $path . '|' . $type . '|' . $ruleKey . '|' . $fingerprint);
         $matchDetails = json_encode(['signature' => $sig['name'], 'signature_id' => $sig['id'], 'source' => $sig['source'] ?? 'sweep', 'matched' => $match['matched'] ?? []], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $row = DB::first("SELECT id,status FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status NOT IN ('ignored','quarantined','deleted')", [$findingHash, $pathHash, $path]);
+        $ignored = DB::first("SELECT id,sha256 FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status='ignored'", [$findingHash, $pathHash, $path]);
+        if ($ignored && ($ignored['sha256'] ?? null) === $sha256) return null;
+        $row = DB::first("SELECT id,status FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status NOT IN ('ignored','quarantined')", [$findingHash, $pathHash, $path]);
         if ($row) {
-            DB::statement('UPDATE findings SET risk=?,title=?,description=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,last_matched_signature_id=?,matched_signature_name=?,matched_signature_source=?,signature_match_details=?,updated_at=? WHERE id=?', [
-                $sig['risk'] ?? 'critical', 'Signature sweep match: ' . $sig['name'], $sig['description'] ?? '', $sha256, $size, $mtime, $owner, $permissions, now(), $sig['id'], $sig['name'], $sig['source'] ?? 'sweep', $matchDetails, now(), $row['id'],
+            DB::statement('UPDATE findings SET rule_key=?,finding_hash=?,risk=?,title=?,description=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,last_matched_signature_id=?,matched_signature_name=?,matched_signature_source=?,signature_match_details=?,updated_at=? WHERE id=?', [
+                $ruleKey, $findingHash, $sig['risk'] ?? 'critical', 'Signature sweep match: ' . $sig['name'], $sig['description'] ?? '', $sha256, $size, $mtime, $owner, $permissions, now(), $sig['id'], $sig['name'], $sig['source'] ?? 'sweep', $matchDetails, now(), $row['id'],
             ]);
             return (int) $row['id'];
         }
-        return DB::insert('INSERT INTO findings (scan_run_id,first_seen_scan_id,last_seen_scan_id,last_matched_signature_id,matched_signature_name,matched_signature_source,signature_match_details,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
-            null, null, null, $sig['id'], $sig['name'], $sig['source'] ?? 'sweep', $matchDetails, $siteId, $path, $pathHash, $findingHash, $sig['risk'] ?? 'critical', 'new', 'webshell', 'signature-sweep', $findingHash, 'Signature sweep match: ' . $sig['name'], $sig['description'] ?? '', '[]', '[]', $sha256, $size, $mtime, $owner, $permissions, now(), now(), now(), now(),
+        return (int) DB::insert('INSERT INTO findings (scan_run_id,first_seen_scan_id,last_seen_scan_id,last_matched_signature_id,matched_signature_name,matched_signature_source,signature_match_details,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
+            null, null, null, $sig['id'], $sig['name'], $sig['source'] ?? 'sweep', $matchDetails, $siteId, $path, $pathHash, $findingHash, $sig['risk'] ?? 'critical', 'new', $type, $ruleKey, $fingerprint, 'Signature sweep match: ' . $sig['name'], $sig['description'] ?? '', '[]', '[]', $sha256, $size, $mtime, $owner, $permissions, now(), now(), now(), now(),
         ]);
     }
 }
