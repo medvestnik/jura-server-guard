@@ -135,6 +135,55 @@ Rules live in `rules/default-rules.php` and are seeded into SQLite. The scanner 
 
 A single `base64_decode(` match is not treated as critical by itself. It becomes more important when combined with other suspicious functions, risky paths, or known malware indicators.
 
+## Scan performance on dependency-heavy sites (Composer/npm)
+
+`vendor/`, `node_modules/`, `bootstrap/cache/`, `storage/logs/`, and other noise directories
+are excluded from scans by default — on a typical Laravel/Composer site, `vendor/` alone is
+often tens of thousands of files, so skipping it (rather than hashing and analyzing every
+third-party package file on every scan) is usually the single biggest speed-up available.
+`node_modules/` is always excluded (it's build-time JS tooling the webserver never executes,
+so there's no detection value in scanning it). `vendor/` is different: it's live PHP code the
+webserver *can* execute, so a thorough/incident-response scan may want to include it — pass
+`--include-vendor` (or set `JURA_SCAN_VENDOR_BY_DEFAULT=true` to make it the default) to scan
+it anyway, e.g. after a confirmed compromise, to check whether an attacker hid a file inside a
+package directory to blend in with legitimate code.
+
+**Is the first scan always slow, and do repeat scans just check hashes?** Yes to both. A
+site's very first scan has to walk and hash everything not excluded, since there is no prior
+baseline to diff against — but with the exclusions above, "everything" no longer includes
+your dependencies. Every scan after that is `differential` by default (no flag needed): a
+file is only re-hashed and re-analyzed if its size, mtime, permissions, or owner changed since
+last time; unchanged files reuse their previously recorded hash. For an even lighter repeat
+check (e.g. a very frequent timer), `--changed-only` skips media files entirely and does the
+minimum analysis needed. `--full-rescan` forces every file to be re-hashed regardless of
+metadata (useful occasionally to catch a change that fakes its mtime, but not something you'd
+want on every run).
+
+**Running the first (slow) scan in the background:** starting a scan from the web panel
+already runs it as a detached background process — closing the browser tab does not stop it,
+and the scan-in-progress banner reflects its live status. From the CLI over SSH, a synchronous
+`php artisan guard:scan-user <user>` blocks your terminal for as long as the scan takes; run it
+detached instead:
+
+```bash
+nohup php artisan guard:scan-user <user> --profile=fast > /root/first-scan.log 2>&1 &
+disown
+# check on it without blocking:
+php artisan guard:scan-active
+tail -f /root/first-scan.log
+```
+
+For ongoing scans you don't need cron at all: the installer's systemd timer
+(`jura-server-guard-scan.timer`, see below) already runs `guard:scan` automatically in the
+background every `JURA_SCAN_INTERVAL_MINUTES` (default 30). Cron is only useful here if you
+want a first baseline scan to kick off once at a specific unattended time (e.g. overnight)
+before the recurring timer takes over:
+
+```bash
+# crontab -e
+0 3 * * * /opt/php83/bin/php /opt/jura-server-guard/artisan guard:scan-user someuser --profile=fast >> /var/log/jura-first-scan.log 2>&1
+```
+
 ## Quarantine
 
 Quarantine is safest through CLI:
