@@ -10,7 +10,10 @@ use App\Support\DB;
 use App\Support\ScanLock;
 use App\Modules\Scanner\SignatureEngine;
 use App\Modules\Scanner\CmsDetector;
+use AppendIterator;
+use ArrayIterator;
 use FilesystemIterator;
+use Iterator;
 use RecursiveCallbackFilterIterator;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
@@ -113,7 +116,7 @@ class ScannerService
         $site = array_merge($site, ['cms_type'=>$cms['type'], 'cms_version'=>$cms['version'], 'cms_confidence'=>$cms['confidence']]);
         $this->progress($options, "Scanning files for site {$site['name']} ({$site['path']})");
         $this->updateRunProgress($runId, $baseFiles, $baseFindings, $site['name'] ?? null, $site['path'] ?? null, "Scanning files", true);
-        $it = new RecursiveIteratorIterator($this->filteredIterator($site['path'], $options));
+        $it = $this->orderedIterator($site['path'], $options);
         foreach ($it as $file) {
             if ($maxFiles > 0 && $count >= $maxFiles) { $this->limitReached = true; $this->progress($options, "Max files reached for {$site['name']}: $maxFiles"); break; }
             if ($this->deadlineReached($options)) { $this->limitReached = true; $this->progress($options, "Max seconds reached for scan run while scanning {$site['name']}: $maxSeconds"); break; }
@@ -280,22 +283,66 @@ class ScannerService
     private function fakeWellKnownPath(string $path): bool { return (bool)preg_match('#/well-known(/|$)#i', $path); }
     private function hasPhpMarker(string $path): bool { if ((@filesize($path) ?: 0) > 1024 * 1024) return false; $c = @file_get_contents($path, false, null, 0, 65536) ?: ''; return stripos($c, '<?php') !== false || stripos($c, '<?=') !== false; }
 
+    private function shouldSkipDirectory(string $path, string $name, array $options): bool
+    {
+        $lower = strtolower($name);
+        if (!($options['include_old'] ?? config('guard.scan_old_dubl_by_default')) && (str_contains($lower, 'old') || str_contains($lower, 'dubl'))) return true;
+        if (!($options['include_storage'] ?? config('guard.scan_storage_by_default')) && $lower === 'storage') return true;
+        if (!($options['include_backups'] ?? false) && (str_contains($lower, 'backup') || str_contains($lower, 'bak'))) return true;
+        foreach (config('guard.exclude_paths') as $pattern) if (fnmatch($pattern, $path.'/', FNM_CASEFOLD)) return true;
+        if (!($options['include_vendor'] ?? config('guard.scan_vendor_by_default'))) foreach (config('guard.exclude_vendor_paths') as $pattern) if (fnmatch($pattern, $path.'/', FNM_CASEFOLD)) return true;
+        return false;
+    }
+
+    private function isPriorityDirectory(string $name): bool
+    {
+        $lower = strtolower($name);
+        foreach (config('guard.priority_dir_names') as $keyword) if (str_contains($lower, $keyword)) return true;
+        return false;
+    }
+
     private function filteredIterator(string $root, array $options): RecursiveCallbackFilterIterator
     {
         $dir = new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS);
         return new RecursiveCallbackFilterIterator($dir, function ($current) use ($options) {
             if (!$current->isDir()) return true;
-            $path = $current->getPathname(); $name = $current->getFilename();
-            $lower = strtolower($name);
-            $skip = false;
-            if (!($options['include_old'] ?? config('guard.scan_old_dubl_by_default')) && (str_contains($lower, 'old') || str_contains($lower, 'dubl'))) $skip = true;
-            if (!($options['include_storage'] ?? config('guard.scan_storage_by_default')) && $lower === 'storage') $skip = true;
-            if (!($options['include_backups'] ?? false) && (str_contains($lower, 'backup') || str_contains($lower, 'bak'))) $skip = true;
-            foreach (config('guard.exclude_paths') as $pattern) if (fnmatch($pattern, $path.'/', FNM_CASEFOLD)) $skip = true;
-            if (!($options['include_vendor'] ?? config('guard.scan_vendor_by_default'))) foreach (config('guard.exclude_vendor_paths') as $pattern) if (fnmatch($pattern, $path.'/', FNM_CASEFOLD)) $skip = true;
-            if ($skip) { $this->skippedDirectories++; return false; }
+            if ($this->shouldSkipDirectory($current->getPathname(), $current->getFilename(), $options)) { $this->skippedDirectories++; return false; }
             return true;
         });
+    }
+
+    /** Public accessor so other services (e.g. a targeted signature sweep) can reuse the
+     *  same directory exclusion rules (old/dubl/backup/storage/vendor/noise) as a normal scan. */
+    public function directoryIterator(string $root, array $options = []): RecursiveIteratorIterator
+    {
+        return new RecursiveIteratorIterator($this->filteredIterator($root, $options));
+    }
+
+    /**
+     * Walks a site root with likely-webshell-drop directories (tmp/cache/uploads/images/...)
+     * visited before everything else, so a fresh shell surfaces early in a scan instead of
+     * after the scanner has worked through a CMS's own (much larger, much less often abused)
+     * library/admin/module code.
+     */
+    private function orderedIterator(string $root, array $options): Iterator
+    {
+        $rootFiles = []; $priorityDirs = []; $normalDirs = [];
+        foreach (@scandir($root) ?: [] as $name) {
+            if ($name === '.' || $name === '..') continue;
+            $full = rtrim($root, '/') . '/' . $name;
+            if (is_link($full)) continue;
+            if (is_dir($full)) {
+                if ($this->shouldSkipDirectory($full, $name, $options)) { $this->skippedDirectories++; continue; }
+                if ($this->isPriorityDirectory($name)) $priorityDirs[] = $full; else $normalDirs[] = $full;
+            } elseif (is_file($full)) {
+                $rootFiles[] = new SplFileInfo($full);
+            }
+        }
+        $append = new AppendIterator();
+        $append->append(new ArrayIterator($rootFiles));
+        foreach ($priorityDirs as $dir) $append->append(new RecursiveIteratorIterator($this->filteredIterator($dir, $options)));
+        foreach ($normalDirs as $dir) $append->append(new RecursiveIteratorIterator($this->filteredIterator($dir, $options)));
+        return $append;
     }
 
     private function meta(string $path, ?array $previous = null, string $relative = '', array $options = []): array

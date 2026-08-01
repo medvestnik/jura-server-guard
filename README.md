@@ -135,18 +135,28 @@ Rules live in `rules/default-rules.php` and are seeded into SQLite. The scanner 
 
 A single `base64_decode(` match is not treated as critical by itself. It becomes more important when combined with other suspicious functions, risky paths, or known malware indicators.
 
-## Scan performance on dependency-heavy sites (Composer/npm)
+## Scan performance and order
 
-`vendor/`, `node_modules/`, `bootstrap/cache/`, `storage/logs/`, and other noise directories
-are excluded from scans by default — on a typical Laravel/Composer site, `vendor/` alone is
-often tens of thousands of files, so skipping it (rather than hashing and analyzing every
-third-party package file on every scan) is usually the single biggest speed-up available.
-`node_modules/` is always excluded (it's build-time JS tooling the webserver never executes,
-so there's no detection value in scanning it). `vendor/` is different: it's live PHP code the
-webserver *can* execute, so a thorough/incident-response scan may want to include it — pass
-`--include-vendor` (or set `JURA_SCAN_VENDOR_BY_DEFAULT=true` to make it the default) to scan
-it anyway, e.g. after a confirmed compromise, to check whether an attacker hid a file inside a
-package directory to blend in with legitimate code.
+`node_modules/`, `storage/logs/`, and old/duplicate/backup copies (`OLD/`, `DUBL/`,
+`*backup*`, `__MACOSX`) are excluded from scans unconditionally — pure noise with no
+detection value (build-time JS tooling, plain-text logs, stale duplicates). `vendor/` is
+excluded by default too, but through its own toggle rather than unconditionally: it's live
+PHP code the webserver *can* execute, so a thorough/incident-response scan may want to
+include it — pass `--include-vendor` (or set `JURA_SCAN_VENDOR_BY_DEFAULT=true` to make it
+the default) to scan it anyway, e.g. after a confirmed compromise, to check whether an
+attacker hid a file inside a package directory to blend in with legitimate code. On a typical
+Laravel/Composer site `vendor/` alone is often tens of thousands of files, so skipping it by
+default is usually the single biggest scan speed-up available.
+
+`tmp/`, `temp/`, `cache/`, `uploads/`, `images/`, `media/`, and similarly-named directories
+are **not** excluded — these are exactly where an attacker's upload usually lands, since
+they're typically the writable, less-watched parts of a site. Instead, they're scanned
+**first**: a site's root-level files are checked, then every directory whose name matches one
+of these patterns (recursively), and only after that does the scanner move on to a CMS's own
+library/admin/module/plugin code — code that's both much larger in file count and much less
+commonly the thing an attacker actually modifies. A fresh shell dropped in an upload directory
+surfaces within the first few seconds of a scan instead of after the scanner has worked
+through the rest of the site.
 
 **Is the first scan always slow, and do repeat scans just check hashes?** Yes to both. A
 site's very first scan has to walk and hash everything not excluded, since there is no prior
@@ -244,6 +254,27 @@ The same lookup is available from the CLI:
 ```bash
 php artisan guard:find-hash <sha256>
 ```
+
+`guard:find-hash`/**Same file elsewhere** only look at what a *previous* scan already
+recorded, though — they can't tell you about a copy sitting somewhere that hasn't been
+scanned since it was dropped. For "we just found a shell, check the whole server for this
+exact one right now," a signature page has a **Sweep whole server for this signature now**
+button (`php artisan guard:signature-sweep <signature_id>` from the CLI). It reads every
+already-inventoried site's files live and checks them against that one signature only —
+skipping every other signature, all the heuristic rules, and log correlation — so it's much
+faster than waiting for or triggering a full re-scan. This is also how you catch a copy an
+attacker deliberately hid somewhere a heuristic scan wouldn't flag it (e.g. renamed to blend
+into a CMS's own library folder instead of an obviously-writable upload directory) — the
+sweep only cares whether the file matches the signature, not where it's sitting.
+
+### Exporting findings for analysis (including by another AI)
+
+The Findings page's **Export JSON (for AI analysis)** link (next to **Export CSV**, same
+active filters) downloads the currently filtered findings as a single structured JSON file —
+path, risk, title/description, matched signature and rule details, and a lightweight incident
+context — ready to paste into an AI chat (this panel's own, or an external one) or attach to
+a support ticket for a second opinion, without having to manually copy details out of the UI
+finding by finding.
 
 ### Auto-created signatures from critical findings
 
