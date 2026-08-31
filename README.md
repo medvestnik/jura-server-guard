@@ -461,6 +461,11 @@ account and can be cleared from the chat page at any time.
 
 ## Incident import
 
+Canonical incident-file authoring contract: [`docs/INCIDENT_IMPORT_FORMAT.md`](docs/INCIDENT_IMPORT_FORMAT.md).  
+Copyable v1 example: [`docs/examples/incident-v1.example.json`](docs/examples/incident-v1.example.json).
+
+> When creating incident JSON manually or with an AI assistant, use the canonical documentation and example above rather than inferring the format only from the runtime validator.
+
 The **Incidents** panel page imports incident reports in the `jura-server-guard-incident`
 JSON format (see `format_version: "1.x"`): incident metadata, attacker `threat_ips`
 (classification/risk/confidence/notes), ready-to-use `malware_signatures` (`hash`, `combo`,
