@@ -64,7 +64,7 @@ The easiest way is to install all host-security monitors:
 
 ```bash
 cd /opt/jura-server-guard
-sudo bin/install-security-monitors.sh
+sudo bash bin/install-security-monitors.sh
 ```
 
 This creates an initial baseline and installs:
