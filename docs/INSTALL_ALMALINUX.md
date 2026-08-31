@@ -64,6 +64,40 @@ JURA_HASH_ALL_FILES=false
 
 The panel is bound to localhost by default. Use SSH tunnel, VPN, or a restricted TLS reverse proxy for remote access.
 
+## Telegram alerts and host security monitors
+
+Telegram is optional but strongly recommended for production incident response. After the main installation, configure these values in `/opt/jura-server-guard/.env`:
+
+```env
+JURA_TELEGRAM_ENABLED=true
+JURA_TELEGRAM_BOT_TOKEN=123456789:telegram-bot-token
+JURA_TELEGRAM_CHAT_ID=123456789
+```
+
+Create the bot with `@BotFather`, send a message to the bot, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` to find `message.chat.id`. For groups the chat id is usually negative.
+
+Test Telegram:
+
+```bash
+cd /opt/jura-server-guard
+/opt/php83/bin/php artisan guard:telegram-test --message="Jura Server Guard Telegram test"
+```
+
+Install host-security monitors:
+
+```bash
+cd /opt/jura-server-guard
+sudo bin/install-security-monitors.sh
+```
+
+This creates systemd units for:
+
+- immediate monitoring of `/root/.ssh/authorized_keys` changes;
+- user/system cron monitoring every minute;
+- suspicious process monitoring every minute.
+
+More details: [`SECURITY_MONITORS.md`](SECURITY_MONITORS.md).
+
 ## Scan lock and scope controls
 
 All heavy scanner/log commands use `storage/locks/scan.lock`. If another scan is active, a new scan exits with a message showing start time and PID. Use `--force` only to remove a stale lock whose PID is dead, and `--no-lock` only for debugging.
