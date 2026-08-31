@@ -14,13 +14,21 @@ return [
     'exclude_paths' => [
         '*/OLD/*', '*/old.*/*', '*/DUBL*/*', '*/dubl*/*', '*/*backup*/*',
         '*/__MACOSX/*', '*/node_modules/*', '*/storage/logs/*',
-        '*/cache/*', '*/tmp/*', '*/temp/*',
     ],
     // Composer's vendor/ contains live PHP code the webserver can execute (unlike node_modules,
     // which is build-time-only JS tooling), so unlike the noise patterns above it's excluded via
     // its own toggle (--include-vendor / JURA_SCAN_VENDOR_BY_DEFAULT) rather than unconditionally,
     // for deep/paranoid audits where an attacker may have hidden a file inside it.
     'exclude_vendor_paths' => ['*/vendor/*'],
+    // tmp/cache/upload/media-style directories are NOT excluded (they're prime webshell drop
+    // targets - usually web-writable, which is exactly why an attacker uses them) but ARE scanned
+    // first, before less commonly abused directories like a CMS's own library/admin/module code.
+    // See ScannerService::isPriorityDirectory().
+    'priority_dir_names' => [
+        'tmp', 'temp', 'cache', 'upload', 'uploads', 'image', 'images', 'img', 'media',
+        'files', 'file', 'attachment', 'attachments', 'download', 'downloads', 'sessions',
+        'logs', 'log',
+    ],
     'exclude_site_names' => ['OLD', 'DUBL', 'DUBL*', 'OLD_*', '*_backup_*', '*backup*', '__MACOSX'],
     'scan_old_dubl_by_default' => bool_env('JURA_SCAN_OLD_DUBL_BY_DEFAULT', false),
     'scan_storage_by_default' => bool_env('JURA_SCAN_STORAGE_BY_DEFAULT', false),

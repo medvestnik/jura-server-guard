@@ -453,4 +453,9 @@ return [
     'This is a draft only — nothing is sent automatically. Review it, adjust as needed, and send it yourself to the abuse contact below.' => 'Це лише чернетка — нічого не надсилається автоматично. Перевірте, за потреби відредагуйте і надішліть самостійно на вказаний нижче abuse-контакт.',
     'To:' => 'Кому:',
     'You will need to find the abuse contact yourself (e.g. via your hosting provider or a WHOIS lookup) and fill in the To: field below.' => 'Знайдіть abuse-контакт самостійно (наприклад, через хостинг-провайдера або сервіс WHOIS) і вкажіть у полі «Кому» нижче.',
+    'Check every already-scanned site for this exact signature right now? This reads every matching-extension file on the server and may take a while on a large server.' => 'Перевірити прямо зараз усі вже відскановані сайти саме на цю сигнатуру? Це читає кожен відповідний за розширенням файл на сервері і може зайняти час на великому сервері.',
+    'Export JSON (for AI analysis)' => 'Експорт у JSON (для аналізу ШІ)',
+    'Sweep complete: :sites site(s), :files file(s) checked, :matches match(es) found.' => 'Перевірку завершено: сайтів перевірено — :sites, файлів перевірено — :files, знайдено збігів — :matches.',
+    'Sweep failed:' => 'Помилка перевірки:',
+    'Sweep whole server for this signature now' => 'Перевірити весь сервер на цю сигнатуру зараз',
 ];

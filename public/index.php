@@ -51,6 +51,12 @@ function send_csv(string $filename, array $rows): void {
     if ($rows) { fputcsv($out, array_keys($rows[0])); foreach ($rows as $row) fputcsv($out, $row); }
     fclose($out); exit;
 }
+function send_json(string $filename, mixed $data): void {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="'.$filename.'"');
+    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
 function finding_filters(?array $source = null): array {
     $source = $source ?? $_GET;
     $where=[]; $params=[];
@@ -223,6 +229,23 @@ if ($path === '/scan/stop' && $method==='POST') { $ctx=scan_active_context(); $p
 if ($path === '/scan/start' && $method==='POST') { $profile=in_array($_POST['profile']??'fast',['fast','standard','deep'],true)?$_POST['profile']:'fast'; $scope=$_POST['scope']??'full'; $value=$_POST['value']??null; $ctx=scan_active_context(); if($ctx['running'] && !$ctx['stale']) redirect(back_url()); $maxSeconds = ($_POST['max_seconds'] ?? '') === '0' ? 0 : (int)($_POST['max_seconds'] ?? 0); start_background_scan($scope,$value,$profile,$maxSeconds); redirect(back_url()); }
 if ($path === '/settings' && $method==='POST') { $keyCol=DB::quoteIdentifier('key'); foreach ($_POST['settings'] ?? [] as $k=>$v) { if(DB::first("SELECT id FROM settings WHERE $keyCol=?",[$k])) DB::statement("UPDATE settings SET value=?,updated_at=? WHERE $keyCol=?",[$v,now(),$k]); else DB::insert("INSERT INTO settings ($keyCol,value,created_at,updated_at) VALUES (?,?,?,?)",[$k,$v,now(),now()]); } redirect('/settings'); }
 if ($path === '/findings/export.csv') { [$w,$p]=finding_filters(); send_csv('findings.csv', DB::select("SELECT f.id,f.risk,f.status,f.type,u.name user_name,s.name site_name,f.path,f.title,f.sha256,f.first_seen_at,f.last_seen_at FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY f.id DESC LIMIT 50000", $p)); }
+if ($path === '/findings/export.json') {
+    [$w,$p] = finding_filters();
+    $rows = DB::select("SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY f.id DESC LIMIT 5000", $p);
+    $findings = array_map(function ($f) {
+        return [
+            'id' => (int) $f['id'], 'risk' => $f['risk'], 'status' => $f['status'], 'type' => $f['type'],
+            'user' => $f['user_name'], 'site' => $f['site_name'], 'path' => $f['path'],
+            'title' => $f['title'], 'description' => $f['description'], 'sha256' => $f['sha256'],
+            'size' => $f['size'] !== null ? (int) $f['size'] : null, 'mtime' => $f['mtime'], 'owner' => $f['owner'], 'permissions' => $f['permissions'],
+            'matched_signature_name' => $f['matched_signature_name'], 'matched_signature_source' => $f['matched_signature_source'],
+            'matched_rules' => json_decode((string) $f['matched_rules'], true) ?: [],
+            'signature_match_details' => json_decode((string) $f['signature_match_details'], true) ?: null,
+            'first_seen_at' => $f['first_seen_at'], 'last_seen_at' => $f['last_seen_at'],
+        ];
+    }, $rows);
+    send_json('findings-export.json', ['format' => 'jura-server-guard-findings-export', 'format_version' => '1.0', 'generated_at' => gmdate('c'), 'hostname' => @gethostname() ?: null, 'filters' => array_filter($_GET), 'count' => count($findings), 'findings' => $findings]);
+}
 if ($path === '/logs/export.csv') { [$w,$p]=log_filters(); send_csv('log_events.csv', DB::select("SELECT l.id,l.risk,l.event_type,u.name user_name,s.name site_name,l.ip,l.method,l.uri,l.status_code,l.user_agent,l.referer,l.created_at FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY l.id DESC LIMIT 50000", $p)); }
 if ($path === '/signatures/create') { echo view('signatures.form',['signature'=>null]); exit; }
 if ($path === '/signatures/create-from-hash') {
@@ -264,6 +287,16 @@ if ($path === '/signatures/analyze') {
     exit;
 }
 if (preg_match('#^/signatures/(\d+)$#',$path,$m)) { $sig=DB::first('SELECT * FROM malware_signatures WHERE id=?',[(int)$m[1]]); echo view('signatures.show',['signature'=>$sig,'matches'=>DB::select('SELECT * FROM findings WHERE last_matched_signature_id=? OR matched_signature_name=? ORDER BY id DESC LIMIT 50',[(int)$m[1],$sig['name']??''])]); exit; }
+if ($path === '/signatures/sweep' && $method === 'POST') {
+    @set_time_limit(300);
+    $id = (int) ($_POST['id'] ?? 0);
+    try {
+        $result = (new \App\Modules\Scanner\SignatureSweepService())->sweep($id);
+        redirect('/signatures/' . $id . '?' . http_build_query(['sweep_sites' => $result['sites_scanned'], 'sweep_files' => $result['files_scanned'], 'sweep_matches' => count($result['finding_ids'])]));
+    } catch (Throwable $e) {
+        redirect('/signatures/' . $id . '?' . http_build_query(['sweep_error' => $e->getMessage()]));
+    }
+}
 if (preg_match('#^/findings/(\d+)$#',$path,$m)) {
     $f=DB::first('SELECT f.*,s.name site_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id WHERE f.id=?',[(int)$m[1]]);
     $elsewhere = (!empty($f['sha256'])) ? DB::select('SELECT fs.path, fs.is_missing, fs.last_seen_at, s.name site_name, u.name user_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE fs.sha256=? AND fs.path<>? ORDER BY fs.last_seen_at DESC LIMIT 100', [$f['sha256'], $f['path']]) : [];
