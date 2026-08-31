@@ -69,7 +69,7 @@ cd /opt/jura-server-guard
 ```bash
 cd /opt/jura-server-guard
 sudo git pull
-sudo bin/install-security-monitors.sh
+sudo bash bin/install-security-monitors.sh
 ```
 
 The installer creates initial baselines without Telegram noise and enables these systemd units:
