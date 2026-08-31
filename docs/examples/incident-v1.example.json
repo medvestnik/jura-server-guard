@@ -1,0 +1,138 @@
+{
+  "format": "jura-server-guard-incident",
+  "format_version": "1.0",
+  "generated_at": "2026-08-31T17:00:00+03:00",
+  "incident": {
+    "id": "example-2026-08-31-webshell",
+    "title": "Confirmed PHP webshell compromise on example.com",
+    "severity": "critical",
+    "confidence": "high",
+    "status": "contained_monitoring",
+    "server": {
+      "hostname": "data10.jurahost.com",
+      "site": "example.com",
+      "site_path": "/var/www/example/data/www/example.com",
+      "server_user": "example",
+      "cms": "Joomla"
+    },
+    "timeline": {
+      "first_known_artifact_at": "2026-08-30T09:46:54+03:00",
+      "confirmed_operator_activity_start": "2026-08-30T09:47:16+03:00",
+      "cleanup_started_at": "2026-08-31T14:00:00+03:00"
+    },
+    "summary": "Confirmed PHP webshell activity was observed and contained.",
+    "initial_access_assessment": {
+      "most_likely_vector": "unknown",
+      "endpoint": "/shell.php",
+      "confidence": "unknown_for_initial_entry_high_for_subsequent_webshell_use",
+      "reason": "The retained logs do not go back far enough to prove the first write event."
+    }
+  },
+  "threat_ips": [
+    {
+      "ip": "203.0.113.10",
+      "classification": "webshell_access",
+      "risk": "critical",
+      "confidence": "high",
+      "recommended_action": "block",
+      "notes": "Confirmed interactive access to the uploaded file manager.",
+      "source": "incident:example-2026-08-31-webshell"
+    }
+  ],
+  "excluded_ips": [
+    {
+      "ip": "192.0.2.20",
+      "classification": "bot",
+      "reason": "Known verification or crawler infrastructure observed after the incident.",
+      "recommended_action": "do_not_block_from_this_incident"
+    }
+  ],
+  "malware_signatures": [
+    {
+      "name": "Example confirmed shell exact hash",
+      "slug": "example-20260831-shell-sha256",
+      "description": "Exact SHA-256 of the confirmed incident shell.",
+      "risk": "critical",
+      "type": "webshell",
+      "pattern_type": "hash",
+      "pattern_json": {
+        "sha256": [
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ]
+      },
+      "target_extensions": [
+        "php",
+        "phtml",
+        "phar"
+      ],
+      "target_paths": [],
+      "exclude_paths": [],
+      "required_hits": 1,
+      "enabled": true,
+      "source": "incident:example-2026-08-31-webshell"
+    }
+  ],
+  "file_iocs": [
+    {
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "size": 12345,
+      "names": [
+        "shell.php"
+      ],
+      "role": "php_file_manager_shell",
+      "risk": "critical",
+      "confidence": "high",
+      "scope": "example.com"
+    },
+    {
+      "sha256": null,
+      "size": 5571,
+      "name": "earlier-shell.php",
+      "path": "/var/www/example/data/www/example.com/earlier-shell.php",
+      "role": "suspected_earlier_backdoor",
+      "risk": "critical",
+      "confidence": "medium",
+      "hash_status": "not_captured_in_available_evidence"
+    }
+  ],
+  "path_indicators": [
+    {
+      "pattern": "/shell.php",
+      "kind": "suffix",
+      "risk": "critical",
+      "confidence": "high",
+      "notes": "Confirmed shell path."
+    }
+  ],
+  "affected_assets": {
+    "confirmed_artifacts": [
+      "example.com"
+    ],
+    "related_confirmed_activity": [],
+    "operator_ip_observed_in_access_logs_not_equal_to_confirmed_compromise": []
+  },
+  "response_actions": {
+    "evidence_root": "/root/incident-example-20260831",
+    "confirmed_malicious_objects_quarantined": 1,
+    "nginx_php_execution_blocks_tested": true,
+    "post_cleanup_test_examples": [
+      "/shell.php -> HTTP 403",
+      "/ -> HTTP 200"
+    ],
+    "status": "contained_monitoring"
+  },
+  "data_gaps": [
+    {
+      "field": "initial_access_vector",
+      "reason": "Relevant older access logs were no longer retained."
+    }
+  ],
+  "import_policy": {
+    "threat_ip_upsert_key": "ip",
+    "signature_upsert_key": "slug",
+    "file_ioc_dedup_key": "sha256_when_available_else_name_size_markers",
+    "on_conflict": "update_mutable_fields_preserve_first_seen",
+    "dry_run_default": true,
+    "notes": "Uses the jura-server-guard-incident 1.0 contract."
+  }
+}
