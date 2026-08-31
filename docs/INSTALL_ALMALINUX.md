@@ -87,7 +87,7 @@ Install host-security monitors:
 
 ```bash
 cd /opt/jura-server-guard
-sudo bin/install-security-monitors.sh
+sudo bash bin/install-security-monitors.sh
 ```
 
 This creates systemd units for:
