@@ -112,6 +112,7 @@ function scanProcesses(string $ignoreRegex, bool $includeInfo): array
             continue;
         }
         $proc['severity'] = $assessment['severity'];
+        $proc['severity_rank'] = $assessment['severity_rank'];
         $proc['reasons'] = $assessment['reasons'];
         $proc['reason_summary'] = implode('; ', $assessment['reasons']);
         $hits[] = $proc;
@@ -266,8 +267,8 @@ function buildTelegramMessage(array $hit, bool $isInitial): string
     $host = gethostname() ?: php_uname('n');
     $title = $isInitial ? '⚙️ Process monitor initial suspicious process' : '🚨 Suspicious process detected';
     $cmd = $hit['cmdline'] !== '' ? $hit['cmdline'] : $hit['comm'];
-    if (mb_strlen($cmd) > 900) {
-        $cmd = mb_substr($cmd, 0, 900) . '…';
+    if (strlen($cmd) > 900) {
+        $cmd = substr($cmd, 0, 900) . '…';
     }
     return $title . "\n"
         . "Host: {$host}\n"
