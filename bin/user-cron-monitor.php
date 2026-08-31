@@ -184,8 +184,8 @@ function buildTelegramMessage(array $event, bool $isInitial): string
         . "File mtime: {$mtime}";
     if (($event['kind'] ?? '') === 'new_cron_line') {
         $line = (string) ($event['line'] ?? '');
-        if (mb_strlen($line) > 900) {
-            $line = mb_substr($line, 0, 900) . '…';
+        if (strlen($line) > 900) {
+            $line = substr($line, 0, 900) . '…';
         }
         $message .= "\nLine: " . ($event['line_no'] ?? '?') . "\nCommand: {$line}";
     } else {
