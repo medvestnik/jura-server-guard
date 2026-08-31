@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Документация Jura Server Guard: установка, панель управления, CLI, профили сканирования, карантин и ISPmanager backups.">
+  <meta name="description" content="Документация Jura Server Guard: установка, Telegram, host security monitors, панель управления, CLI, профили сканирования, карантин и ISPmanager backups.">
   <title>Jura Server Guard — документация панели управления</title>
   <link rel="stylesheet" href="assets/css/style.css">
 </head>
@@ -21,9 +21,10 @@
       <div>
         <p class="eyebrow">Security panel for PHP hosting servers</p>
         <h1>Jura Server Guard — документация панели управления</h1>
-        <p class="hero-lead">Практическое руководство для администраторов: установка, безопасный доступ к web-панели, профили сканирования, разбор находок, карантин, восстановление из ISPmanager backups и CLI-команды.</p>
+        <p class="hero-lead">Практическое руководство для администраторов: установка, безопасный доступ к web-панели, Telegram-уведомления, host-level мониторинг, профили сканирования, разбор находок, карантин, восстановление из ISPmanager backups и CLI-команды.</p>
         <div class="hero-actions">
           <a class="button primary" href="#installation">Начать установку</a>
+          <a class="button" href="#host-monitors">Host monitors</a>
           <a class="button" href="#cli-reference">CLI reference</a>
         </div>
       </div>
@@ -32,7 +33,7 @@
           <div><dt>Панель</dt><dd><code>127.0.0.1:8765</code></dd></div>
           <div><dt>PHP</dt><dd><code>/opt/php83/bin/php</code></dd></div>
           <div><dt>Установка</dt><dd><code>/opt/jura-server-guard</code></dd></div>
-          <div><dt>Профиль по умолчанию</dt><dd><code>fast</code></dd></div>
+          <div><dt>Host monitors</dt><dd><code>systemd</code></dd></div>
         </dl>
       </aside>
     </div>
@@ -41,10 +42,12 @@
   <div class="layout">
     <aside class="sidebar" id="sidebar">
       <label class="search-label" for="doc-search">Поиск по разделам</label>
-      <input id="doc-search" class="search" type="search" placeholder="Например: quarantine, backup, scan">
+      <input id="doc-search" class="search" type="search" placeholder="Например: telegram, cron, process, quarantine">
       <nav class="toc" aria-label="Разделы документации">
         <a href="#overview">Что это</a>
         <a href="#installation">Установка</a>
+        <a href="#telegram">Telegram</a>
+        <a href="#host-monitors">Host security monitors</a>
         <a href="#panel-access">Доступ к панели</a>
         <a href="#dashboard">Dashboard</a>
         <a href="#suspicious-logs">Подозрительные логи</a>
@@ -67,9 +70,9 @@
         <p>Jura Server Guard — лёгкая локальная панель безопасности для серверов с PHP-сайтами. Она помогает быстро увидеть пользователей и сайты под <code>/var/www</code>, запустить проверку, разобрать подозрительные файлы и сохранить доказательства для инцидент-репонса.</p>
         <div class="cards two">
           <article class="card"><h3>Что обнаруживает</h3><ul><li>подозрительные PHP-файлы и webshell-маркеры;</li><li>packed loaders, <code>eval</code>, <code>gzuncompress</code>, <code>gzinflate</code> и self-reading payloads;</li><li>SEO cloaking, ALFA/alfacgiapi-индикаторы;</li><li>fake validation folders: <code>well-known</code>, <code>pki-validation</code>, PHP внутри validation paths.</li></ul></article>
-          <article class="card"><h3>Что поддерживает</h3><ul><li>карантин и восстановление подозрительных файлов;</li><li>профили сканирования <code>fast</code>, <code>standard</code>, <code>deep</code>;</li><li>историю сканов и recent suspicious log events;</li><li>браузер и selective restore из ISPmanager/custom backups.</li></ul></article>
+          <article class="card"><h3>Что поддерживает</h3><ul><li>карантин и восстановление подозрительных файлов;</li><li>профили сканирования <code>fast</code>, <code>standard</code>, <code>deep</code>;</li><li>Telegram-уведомления о критичных находках;</li><li>host-level мониторинг SSH-ключей, cron и процессов;</li><li>браузер и selective restore из ISPmanager/custom backups.</li></ul></article>
         </div>
-        <div class="callout info"><strong>Info.</strong> Инструмент не заменяет полноценный EDR/антивирус. Его задача — дать хостинг-администратору быстрый обзор PHP-сайтов, подозрительных изменений и безопасный workflow карантина.</div>
+        <div class="callout info"><strong>Info.</strong> Инструмент не заменяет полноценный EDR/антивирус. Его задача — дать хостинг-администратору быстрый обзор PHP-сайтов, подозрительных изменений, host-level persistence points и безопасный workflow карантина.</div>
       </section>
 
       <section id="installation" data-title="installation установка php opt php83 service timer">
@@ -90,6 +93,63 @@ sudo JURA_PHP_BIN=/opt/php83/bin/php bin/install-almalinux.sh</code></pre>
         <pre><code class="language-bash">systemctl status jura-server-guard --no-pager -l
 systemctl status jura-server-guard-scan.timer --no-pager -l
 ss -lntp | grep 8765</code></pre>
+        <p>Для production-сервера после базовой установки рекомендуется сразу настроить Telegram и включить host-level мониторы:</p>
+        <pre><code class="language-bash">cd /opt/jura-server-guard
+# сначала заполните JURA_TELEGRAM_* в .env и проверьте отправку
+/opt/php83/bin/php artisan guard:telegram-test --message="Jura Server Guard Telegram test"
+
+# затем установите systemd-мониторы SSH-ключей, cron и процессов
+sudo bin/install-security-monitors.sh</code></pre>
+      </section>
+
+      <section id="telegram" data-title="telegram bot botfather token chat id getupdates notifications">
+        <div class="section-heading"><p class="kicker">Telegram alerts</p><h2>Подключение Telegram-уведомлений</h2></div>
+        <p>Telegram используется scanner-уведомлениями, монитором SSH-ключей, монитором cron и монитором подозрительных процессов.</p>
+        <ol>
+          <li>Откройте в Telegram <code>@BotFather</code> и выполните <code>/newbot</code>.</li>
+          <li>Скопируйте токен бота в <code>/opt/jura-server-guard/.env</code>.</li>
+          <li>Напишите любое сообщение новому боту от аккаунта или группы, куда должны приходить уведомления.</li>
+          <li>Откройте <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> и найдите <code>message.chat.id</code>.</li>
+          <li>Для групп chat id часто отрицательный, например <code>-1001234567890</code>.</li>
+        </ol>
+        <pre><code class="language-env">JURA_TELEGRAM_ENABLED=true
+JURA_TELEGRAM_BOT_TOKEN=123456789:telegram-bot-token
+JURA_TELEGRAM_CHAT_ID=123456789</code></pre>
+        <pre><code class="language-bash">cd /opt/jura-server-guard
+/opt/php83/bin/php artisan guard:telegram-test --message="Jura Server Guard Telegram test"</code></pre>
+        <div class="callout tip"><strong>Tip.</strong> Если <code>getUpdates</code> возвращает пустой результат, отправьте боту ещё одно сообщение и обновите URL. Если бот используется в группе, сначала добавьте бота в группу и только потом проверяйте <code>getUpdates</code>.</div>
+      </section>
+
+      <section id="host-monitors" data-title="host security monitors ssh keys authorized_keys cron processes systemd telegram">
+        <div class="section-heading"><p class="kicker">Host security monitors</p><h2>Мониторинг SSH-ключей, cron и процессов</h2></div>
+        <p>Host-level мониторы отслеживают точки закрепления, которые часто используются после взлома сервера: добавление SSH-ключей, пользовательские и системные cron-задания, подозрительные процессы из временных директорий.</p>
+        <div class="cards three">
+          <article class="card"><h3>SSH authorized_keys</h3><p>Следит за <code>/root/.ssh/authorized_keys</code> и <code>/var/www/*/data/.ssh/authorized_keys</code>. При появлении нового fingerprint отправляет Telegram-уведомление с host, файлом, строкой, типом ключа, SHA256 fingerprint, comment и mtime.</p></article>
+          <article class="card"><h3>User/system cron</h3><p>Следит за <code>/var/spool/cron/*</code>, <code>/etc/crontab</code>, <code>/etc/cron.d/*</code> и стандартными каталогами <code>/etc/cron.*</code>. Уведомляет о новом cron-файле, изменении hash или новой non-comment строке.</p></article>
+          <article class="card"><h3>Suspicious processes</h3><p>Сканирует <code>/proc</code> и уведомляет о новых подозрительных сигнатурах процессов: deleted executable, запуск из <code>/tmp</code>, <code>/dev/shm</code>, <code>bin-tmp</code>, <code>mod-tmp</code>, <code>gs-dbus</code>, <code>kdevtmpfsi</code>, <code>xmrig</code>, <code>curl|wget | sh</code> и encoded/eval shell patterns.</p></article>
+        </div>
+        <p>Установка создаёт baseline без Telegram-шума по уже существующим ключам, cron-заданиям и процессам, затем включает systemd units:</p>
+        <pre><code class="language-bash">cd /opt/jura-server-guard
+sudo bin/install-security-monitors.sh</code></pre>
+        <pre><code class="language-text">jura-server-guard-ssh-keys.path      # immediate authorized_keys watch
+jura-server-guard-user-cron.timer    # every minute
+jura-server-guard-processes.timer    # every minute</code></pre>
+        <p>Проверка статуса:</p>
+        <pre><code class="language-bash">systemctl status jura-server-guard-ssh-keys.path --no-pager
+systemctl list-timers | grep jura-server-guard
+journalctl -u jura-server-guard-ssh-keys.service -n 50 --no-pager
+journalctl -u jura-server-guard-user-cron.service -n 50 --no-pager
+journalctl -u jura-server-guard-processes.service -n 50 --no-pager</code></pre>
+        <p>Ручные проверки:</p>
+        <pre><code class="language-bash">cd /opt/jura-server-guard
+/opt/php83/bin/php bin/ssh-key-monitor.php
+/opt/php83/bin/php bin/user-cron-monitor.php
+/opt/php83/bin/php bin/process-monitor.php --dry-run</code></pre>
+        <p>Основные настройки в <code>.env</code>:</p>
+        <pre><code class="language-env">JURA_SSH_KEY_MONITOR_FILES=/root/.ssh/authorized_keys,/var/www/*/data/.ssh/authorized_keys
+JURA_USER_CRON_MONITOR_FILES=/var/spool/cron/*,/var/spool/cron/crontabs/*,/etc/crontab,/etc/cron.d/*,/etc/cron.hourly/*,/etc/cron.daily/*,/etc/cron.weekly/*,/etc/cron.monthly/*
+JURA_PROCESS_MONITOR_IGNORE_REGEX=</code></pre>
+        <div class="callout info"><strong>Info.</strong> Детальная документация по host-level мониторингу вынесена в <a href="SECURITY_MONITORS.md">SECURITY_MONITORS.md</a>, отдельно по SSH-ключам — в <a href="ssh-key-monitor.md">ssh-key-monitor.md</a>.</div>
       </section>
 
       <section id="panel-access" data-title="accessing panel ssh tunnel browser localhost expose">
@@ -189,7 +249,7 @@ ss -lntp | grep 8765</code></pre>
 wp plugin verify-checksums plugin-slug --path=/path/to/site --allow-root</code></pre></div>
       </section>
 
-      <section id="cli-reference" data-title="cli reference guard status db stats scan logs prune optimize db">
+      <section id="cli-reference" data-title="cli reference guard status db stats scan logs prune optimize db telegram monitors">
         <div class="section-heading"><p class="kicker">CLI reference</p><h2>Основные CLI-команды</h2></div>
         <pre><code class="language-bash">/opt/php83/bin/php artisan guard:status
 /opt/php83/bin/php artisan guard:db-stats
@@ -200,12 +260,16 @@ wp plugin verify-checksums plugin-slug --path=/path/to/site --allow-root</code><
 /opt/php83/bin/php artisan guard:scan-unlock --force
 /opt/php83/bin/php artisan guard:cleanup-running-scans
 /opt/php83/bin/php artisan guard:prune --days=30
-/opt/php83/bin/php artisan guard:optimize-db</code></pre>
+/opt/php83/bin/php artisan guard:optimize-db
+/opt/php83/bin/php artisan guard:telegram-test --message="test"
+/opt/php83/bin/php bin/ssh-key-monitor.php
+/opt/php83/bin/php bin/user-cron-monitor.php
+/opt/php83/bin/php bin/process-monitor.php --dry-run</code></pre>
       </section>
 
-      <section id="updating" data-title="updating jura server guard git pull rsync migrate composer service">
+      <section id="updating" data-title="updating jura server guard git pull rsync migrate composer service monitors">
         <div class="section-heading"><p class="kicker">Updating</p><h2>Обновление Jura Server Guard</h2></div>
-        <p>Перед обновлением остановите timer и сервис, подтяните репозиторий, синхронизируйте код в <code>/opt/jura-server-guard</code>, примените миграции и запустите сервис.</p>
+        <p>Перед обновлением остановите timer и сервис, подтяните репозиторий, синхронизируйте код в <code>/opt/jura-server-guard</code>, примените миграции и запустите сервис. Если обновление добавляет host-level monitors, после синхронизации запустите <code>bin/install-security-monitors.sh</code>.</p>
         <pre><code class="language-bash">systemctl disable --now jura-server-guard-scan.timer
 systemctl stop jura-server-guard
 
@@ -222,28 +286,36 @@ rsync -a --delete \
 cd /opt/jura-server-guard
 /opt/php83/bin/php artisan migrate
 
+# install/update host-level systemd monitors: SSH keys, user cron, suspicious processes
+sudo bin/install-security-monitors.sh
+
 systemctl daemon-reload
 systemctl start jura-server-guard
-systemctl status jura-server-guard --no-pager -l</code></pre>
+systemctl enable --now jura-server-guard-scan.timer
+systemctl status jura-server-guard --no-pager -l
+systemctl status jura-server-guard-ssh-keys.path --no-pager
+systemctl list-timers | grep jura-server-guard</code></pre>
         <div class="callout tip"><strong>Tip.</strong> Если <code>composer.json</code> и <code>composer.lock</code> не изменились, Composer можно пропустить. Если Composer нужен, определяйте доступный <code>composer</code> или <code>composer.phar</code> на сервере; не полагайтесь на жёсткий путь <code>/root/jura-server-guard/composer.phar</code>.</div>
       </section>
 
-      <section id="troubleshooting" data-title="troubleshooting panel not opening service port scan lock sql timer findings false positives">
+      <section id="troubleshooting" data-title="troubleshooting panel not opening service port scan lock sql timer findings false positives monitors">
         <div class="section-heading"><p class="kicker">Troubleshooting</p><h2>Диагностика проблем</h2></div>
         <div class="cards two">
-          <article class="card"><h3>Частые причины</h3><ul><li>panel not opening — нет SSH tunnel или сервис не запущен;</li><li>port 8765 not listening — упал <code>jura-server-guard</code> или bind изменён;</li><li>scan lock stuck — предыдущий scan аварийно завершился;</li><li>SQL missing column after update — не выполнен <code>artisan migrate</code>;</li><li>timer accidentally running — timer не остановлен перед ручным обслуживанием;</li><li>too many findings — запущен <code>deep</code> на большом сайте;</li><li>false positives — проверьте CMS checksums и allowlist.</li></ul></article>
+          <article class="card"><h3>Частые причины</h3><ul><li>panel not opening — нет SSH tunnel или сервис не запущен;</li><li>port 8765 not listening — упал <code>jura-server-guard</code> или bind изменён;</li><li>scan lock stuck — предыдущий scan аварийно завершился;</li><li>SQL missing column after update — не выполнен <code>artisan migrate</code>;</li><li>timer accidentally running — timer не остановлен перед ручным обслуживанием;</li><li>host monitor alerts not delivered — не заполнены <code>JURA_TELEGRAM_*</code> или не запущены systemd units;</li><li>too many findings — запущен <code>deep</code> на большом сайте;</li><li>false positives — проверьте CMS checksums и allowlist.</li></ul></article>
           <article class="card"><h3>Полезные команды</h3><pre><code class="language-bash">systemctl status jura-server-guard --no-pager -l
 journalctl -u jura-server-guard -n 100 --no-pager
 ss -lntp | grep 8765
 ps aux | grep '[a]rtisan guard:scan'
 /opt/php83/bin/php artisan guard:scan-unlock --force
-/opt/php83/bin/php artisan guard:cleanup-running-scans</code></pre></article>
+/opt/php83/bin/php artisan guard:cleanup-running-scans
+systemctl status jura-server-guard-ssh-keys.path --no-pager
+journalctl -u jura-server-guard-processes.service -n 50 --no-pager</code></pre></article>
         </div>
       </section>
 
-      <section id="security" data-title="security recommendations ssh tunnel checksums backups evidence">
+      <section id="security" data-title="security recommendations ssh tunnel checksums backups evidence host monitors">
         <div class="section-heading"><p class="kicker">Security recommendations</p><h2>Рекомендации по безопасности</h2></div>
-        <ul class="check-list"><li>Держите панель привязанной к <code>127.0.0.1</code>.</li><li>Используйте SSH tunnel для доступа.</li><li>Держите web restore отключённым, пока он действительно не нужен.</li><li>Не выполняйте массовый quarantine для <code>medium</code> findings без ручной проверки.</li><li>Проверяйте checksums WordPress core/plugins перед выводом о заражении.</li><li>Используйте backups перед заменой файлов.</li><li>Сохраняйте evidence: stat, sha256, quarantine path, matched rules и raw log.</li></ul>
+        <ul class="check-list"><li>Держите панель привязанной к <code>127.0.0.1</code>.</li><li>Используйте SSH tunnel для доступа.</li><li>Включите Telegram и host-level monitors после установки.</li><li>Отслеживайте <code>authorized_keys</code>, cron и подозрительные процессы через systemd units.</li><li>Держите web restore отключённым, пока он действительно не нужен.</li><li>Не выполняйте массовый quarantine для <code>medium</code> findings без ручной проверки.</li><li>Проверяйте checksums WordPress core/plugins перед выводом о заражении.</li><li>Используйте backups перед заменой файлов.</li><li>Сохраняйте evidence: stat, sha256, quarantine path, matched rules, raw log и host-monitor alert.</li></ul>
       </section>
     </main>
   </div>
