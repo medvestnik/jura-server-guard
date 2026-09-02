@@ -12,8 +12,8 @@ $evidenceByIp = $evidenceByIp ?? [];
 <div class="notice info"><?= e(t('This IP is not yet in the attacker list.')) ?></div>
 <?php endif ?>
 <?php if (($_GET['saved'] ?? '') === '1'): ?><div class="notice success"><?= e(t('IP and detection context saved.')) ?></div><?php endif ?>
-<?php if (($_GET['block_result'] ?? '') === 'blocked'): ?><div class="notice success"><?= e(t('IP blocked in the runtime and permanent firewalld configuration.')) ?></div><?php endif ?>
-<?php if (($_GET['block_result'] ?? '') === 'already_blocked'): ?><div class="notice info"><?= e(t('This IP is already blocked by firewalld.')) ?></div><?php endif ?>
+<?php if (($_GET['block_result'] ?? '') === 'blocked'): ?><div class="notice success"><?= e(t('IP blocked in the runtime and permanent firewall configuration using :backend.', ['backend'=>($_GET['block_backend'] ?? '') ?: t('firewall')])) ?></div><?php endif ?>
+<?php if (($_GET['block_result'] ?? '') === 'already_blocked'): ?><div class="notice info"><?= e(t('This IP is already blocked by :backend.', ['backend'=>($_GET['block_backend'] ?? '') ?: t('firewall')])) ?></div><?php endif ?>
 <?php if (($_GET['block_result'] ?? '') === 'block_failed'): ?><div class="notice danger-notice"><?= e(t('IP could not be blocked:')) ?> <?= e($_GET['block_message'] ?? '') ?></div><?php endif ?>
 
 <?php if ($contextEvent): ?>
@@ -41,7 +41,7 @@ $evidenceByIp = $evidenceByIp ?? [];
     <p><textarea class="input wide-input" name="notes" rows="2" placeholder="<?= e(t('Optional comment')) ?>"></textarea></p>
     <div class="actions">
       <button class="btn"><?= e(t('Save')) ?></button>
-      <?php if ($prefillIp !== ''): ?><button class="btn danger" type="submit" formaction="/threat-ips/block" formmethod="post" onclick="return confirm(<?= e(json_encode(t('Block this IP in firewalld?'))) ?>)"><?= e(t('Block IP')) ?></button><?php endif ?>
+      <?php if ($prefillIp !== ''): ?><button class="btn danger" type="submit" formaction="/threat-ips/block" formmethod="post" onclick="return confirm(<?= e(json_encode(t('Block this IP in the server firewall?'))) ?>)"><?= e(t('Block IP')) ?></button><?php endif ?>
     </div>
   </form>
   <?php if (!config('guard.firewall_actions_enabled')): ?><p class="muted"><?= e(t('Firewall actions are disabled. Enable JURA_FIREWALL_ACTIONS_ENABLED=true to use blocking buttons.')) ?></p><?php endif ?>
@@ -58,7 +58,7 @@ $evidenceByIp = $evidenceByIp ?? [];
     <td class="actions-cell">
       <a class="btn small" href="/logs?ip=<?= urlencode($i['ip']) ?>"><?= e(t('View logs')) ?></a>
       <a class="btn small" href="/threat-ips/abuse-report?ip=<?= urlencode($i['ip']) ?>"><?= e(t('Abuse report')) ?></a>
-      <?php if(($i['firewall_status']??'')!=='blocked'): ?><form method="post" action="/threat-ips/block" class="inline-form" onsubmit="return confirm(<?= e(json_encode(t('Block this IP in firewalld?'))) ?>)"><input type="hidden" name="ip" value="<?= e($i['ip']) ?>"><button class="btn danger small"><?= e(t('Block')) ?></button></form><?php else: ?><span class="badge low"><?= e(t('Already blocked')) ?></span><?php endif ?>
+      <?php if(($i['firewall_status']??'')!=='blocked'): ?><form method="post" action="/threat-ips/block" class="inline-form" onsubmit="return confirm(<?= e(json_encode(t('Block this IP in the server firewall?'))) ?>)"><input type="hidden" name="ip" value="<?= e($i['ip']) ?>"><button class="btn danger small"><?= e(t('Block')) ?></button></form><?php else: ?><span class="badge low"><?= e(t('Already blocked')) ?></span><?php endif ?>
       <?php if(($i['firewall_status']??'')!=='blocked'): ?><form method="post" action="/threat-ips/delete" class="inline-form" onsubmit="return confirm(<?= e(json_encode(t('Remove this IP from the list?'))) ?>)"><input type="hidden" name="id" value="<?= e($i['id']) ?>"><button class="btn danger small"><?= e(t('Delete')) ?></button></form><?php endif ?>
     </td>
   </tr>

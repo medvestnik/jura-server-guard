@@ -246,10 +246,10 @@ if ($path === '/threat-ips/block' && $method === 'POST') {
         DB::statement('UPDATE threat_ips SET classification=?,risk=?,notes=CASE WHEN ? = ? THEN notes ELSE ? END,last_seen_at=?,updated_at=? WHERE id=?', [$classification,$risk,$notes,'',$notes,now(),now(),$existing['id']]);
     }
     if ($existing) save_threat_ip_evidence((int)$existing['id'], (int)($_POST['log_event_id'] ?? 0), $ip);
-    $result = 'block_failed'; $message = t('Firewall actions are disabled.');
+    $result = 'block_failed'; $message = t('Firewall actions are disabled.'); $backend = '';
     if ($existing && config('guard.firewall_actions_enabled')) {
         try {
-            $svc = new IpBlockService(); $before = $svc->status($ip); $svc->block($ip);
+            $svc = new IpBlockService(); $before = $svc->status($ip); $after = $svc->block($ip); $backend = (string)($after['backend'] ?? $before['backend'] ?? '');
             $result = $before['blocked'] ? 'already_blocked' : 'blocked'; $message = '';
             DB::statement('UPDATE threat_ips SET firewall_status=?,firewall_error=NULL,blocked_at=COALESCE(blocked_at,?),updated_at=? WHERE id=?', ['blocked',now(),now(),$existing['id']]);
         } catch (Throwable $e) {
@@ -257,7 +257,7 @@ if ($path === '/threat-ips/block' && $method === 'POST') {
             DB::statement('UPDATE threat_ips SET firewall_status=?,firewall_error=?,updated_at=? WHERE id=?', ['failed',$message,now(),$existing['id']]);
         }
     }
-    redirect('/threat-ips?'.http_build_query(['ip'=>$ip,'block_result'=>$result,'block_message'=>$message]));
+    redirect('/threat-ips?'.http_build_query(['ip'=>$ip,'block_result'=>$result,'block_message'=>$message,'block_backend'=>$backend]));
 }
 if ($path === '/threat-ips/abuse-report') {
     $ip = trim((string) ($_GET['ip'] ?? ''));
