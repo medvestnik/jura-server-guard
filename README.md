@@ -315,12 +315,28 @@ already known as a signature" in one search instead of checking each section by 
 
 ## Threat IPs
 
-The **Threat IPs** panel page is a manually curated list of attacker IP addresses, each
-with a classification (`scanner`, `bruteforce`, `webshell_access`, `bot`, `direct_login`,
-`manual`, `unknown`), a risk level, and free-text notes. It does not block traffic by
-itself — it's an investigation aid. IPs seen in the Dashboard and Suspicious logs tables
-show a **Flag IP** quick action (or their classification badge if already flagged), so
-recurring attacker IPs are easy to recognize across incidents.
+The **Threat IPs** panel page stores attacker IP addresses with a classification (`scanner`,
+`bruteforce`, `webshell_access`, `bot`, `direct_login`, `manual`, `unknown`), a risk level,
+and optional free-text notes. **Flag IP** links from Suspicious logs also pass the exact log
+event, so the site, requested URI/file, log path, and detection date are shown before saving
+and recorded automatically in `threat_ip_evidence`. If the IP is already present, the page
+says so explicitly and updates the existing record instead of creating a duplicate.
+
+Optional firewalld blocking from the local panel is disabled by default and is separate from
+ordinary web quarantine actions:
+
+```env
+JURA_FIREWALL_ACTIONS_ENABLED=true
+JURA_FIREWALL_CMD=/usr/bin/firewall-cmd
+JURA_FIREWALL_BLOCK_ZONE=drop
+```
+
+The **Block** action adds the public IP as a source to the configured firewalld drop zone in
+both runtime and permanent configurations. It reports an already-existing rule without
+duplicating it. Trusted IPs and private, loopback, link-local, or reserved ranges are refused
+to reduce the chance of locking out legitimate management access. The installed panel runs
+as root; if a custom deployment runs it as another user, that process must be granted only
+the narrowly required firewalld permission.
 
 CLI equivalents:
 
@@ -523,6 +539,7 @@ Manual cron alternative:
 - Keep the panel behind a firewall or VPN where possible.
 - The panel requires admin authentication.
 - Web actions are disabled by default: `JURA_WEB_ACTIONS_ENABLED=false`.
+- Firewall actions are independently disabled by default: `JURA_FIREWALL_ACTIONS_ENABLED=false`.
 - The panel previews only a limited prefix of suspicious files.
 - Do not download quarantined malware to workstations without proper isolation.
 - Review findings before quarantine; Jura AV Monitor is an MVP monitor, not a perfect antivirus.

@@ -116,6 +116,7 @@ class Application
         $this->backfillScanRunCompatibilityColumns();
         $this->ensureRestoreActionsTable($driver);
         $this->ensureThreatIpsTable($driver);
+        $this->ensureThreatIpEvidenceTable($driver);
         $this->ensureIncidentTables($driver);
         $this->ensureAiChatTable($driver);
 
@@ -243,7 +244,21 @@ class Application
         $this->ensureColumn('threat_ips', 'confidence', $driver === 'mysql' ? 'VARCHAR(32) NULL' : 'TEXT NULL');
         $this->ensureColumn('threat_ips', 'recommended_action', $driver === 'mysql' ? 'VARCHAR(64) NULL' : 'TEXT NULL');
         $this->ensureColumn('threat_ips', 'incident_id', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
+        $this->ensureColumn('threat_ips', 'blocked_at', $driver === 'mysql' ? 'DATETIME NULL' : 'TEXT NULL');
+        $this->ensureColumn('threat_ips', 'firewall_status', $driver === 'mysql' ? 'VARCHAR(32) NULL' : 'TEXT NULL');
+        $this->ensureColumn('threat_ips', 'firewall_error', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
         if ($driver === 'mysql') { try { DB::pdo()->exec("ALTER TABLE threat_ips MODIFY source VARCHAR(191) NOT NULL DEFAULT 'manual'"); } catch (\Throwable) {} }
+    }
+
+    private function ensureThreatIpEvidenceTable(string $driver): void
+    {
+        if ($driver === 'mysql') {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS threat_ip_evidence (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, threat_ip_id BIGINT UNSIGNED NOT NULL, log_event_id BIGINT UNSIGNED NULL, site_id BIGINT UNSIGNED NULL, site_name VARCHAR(255) NULL, request_uri LONGTEXT NULL, file_path TEXT NULL, detected_at DATETIME NULL, created_at DATETIME NULL, UNIQUE KEY uniq_threat_ip_log_event(threat_ip_id, log_event_id), INDEX threat_ip_evidence_ip_idx(threat_ip_id), INDEX threat_ip_evidence_event_idx(log_event_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        } else {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS threat_ip_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, threat_ip_id INTEGER NOT NULL, log_event_id INTEGER NULL, site_id INTEGER NULL, site_name TEXT NULL, request_uri TEXT NULL, file_path TEXT NULL, detected_at TEXT NULL, created_at TEXT, UNIQUE(threat_ip_id, log_event_id))");
+            DB::pdo()->exec('CREATE INDEX IF NOT EXISTS threat_ip_evidence_ip_idx ON threat_ip_evidence(threat_ip_id)');
+            DB::pdo()->exec('CREATE INDEX IF NOT EXISTS threat_ip_evidence_event_idx ON threat_ip_evidence(log_event_id)');
+        }
     }
 
     private function ensureIncidentTables(string $driver): void
