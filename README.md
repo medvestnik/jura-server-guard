@@ -238,8 +238,7 @@ When `JURA_WEB_ACTIONS_ENABLED=true`, the **Findings** page shows a checkbox per
 hundreds of matched webshells from one signature) can be cleaned up in one action instead of
 one file at a time. Every non-deleted row and finding detail page also has a **Delete from
 server** button for permanent single-file deletion. If more findings match the current filter
-than are shown on the page (the
-list is capped at 500 rows), a **Select all N matching current filter** checkbox applies the
+than are shown on the current page, a **Select all N matching current filter** checkbox applies the
 action to every matching finding server-side, not just the visible ones.
 
 **Quarantine** moves the file into the quarantine directory as before (reversible via
@@ -250,6 +249,11 @@ both marked `deleted`. If the finding was already quarantined, **Delete from ser
 its quarantine copy instead. Both actions require an explicit confirmation dialog showing how many
 files will be affected, and both are always disabled unless `JURA_WEB_ACTIONS_ENABLED=true`
 (same gate as the existing single-file quarantine action).
+
+Bulk actions run in a background PHP process. The Findings page displays the action type,
+processed/total count, successful and failed counts, current path, and a progress bar updated
+every two seconds. Job state is stored under `storage/bulk-finding-actions/` and retained for
+seven days, so a page reload does not lose the result.
 
 The **User** filter field on the Findings page also autocompletes from every known account
 name as you type, so you don't need to remember or retype the exact ISPmanager username.

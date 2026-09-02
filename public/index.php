@@ -1,7 +1,7 @@
 <?php
 function utc_timestamp(string $timestamp): int { return strtotime($timestamp . ' UTC') ?: strtotime($timestamp) ?: time(); }
 require dirname(__DIR__).'/vendor/autoload.php';
-use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService; use App\Modules\Ai\SignatureSuggestionService; use App\Modules\Ai\ChatService; use App\Modules\Abuse\AbuseReportService; use App\Modules\Firewall\IpBlockService;
+use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Quarantine\BulkFindingActionService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService; use App\Modules\Ai\SignatureSuggestionService; use App\Modules\Ai\ChatService; use App\Modules\Abuse\AbuseReportService; use App\Modules\Firewall\IpBlockService;
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 try { DB::pdo(); } catch (Throwable $e) { echo 'Database not initialized. Run php artisan migrate.'; exit; }
@@ -41,6 +41,13 @@ function start_background_scan(string $scope, ?string $value, string $profile, ?
     $out = storage_path('logs/web-scan.log');
     if (!is_dir(dirname($out))) mkdir(dirname($out), 0750, true);
     exec(implode(' ', $parts).' >> '.escapeshellarg($out).' 2>&1 &');
+}
+function start_background_bulk_finding_action(string $id): void {
+    $php = trim((string)env_value('JURA_PHP_BIN', '')) ?: PHP_BINARY;
+    $out = storage_path('logs/bulk-finding-actions.log');
+    if (!is_dir(dirname($out))) mkdir(dirname($out), 0750, true);
+    $cmd = escapeshellarg($php).' '.escapeshellarg(base_path('artisan')).' guard:findings-bulk-action '.escapeshellarg($id);
+    exec($cmd.' >> '.escapeshellarg($out).' 2>&1 &');
 }
 function back_url(): string { return $_SERVER['HTTP_REFERER'] ?? '/'; }
 function safe_finding_preview(?array $finding): array {
@@ -220,17 +227,22 @@ if ($path === '/finding/delete' && $method==='POST' && config('guard.web_actions
     catch (Throwable $e) { redirect('/findings?'.http_build_query(['delete_error'=>$e->getMessage()])); }
 }
 if ($path === '/quarantine/restore' && $method==='POST' && config('guard.web_actions_enabled')) { (new QuarantineService())->restore((int)$_POST['id']); redirect('/quarantine'); }
-if ($path === '/findings/bulk-quarantine' && $method==='POST' && config('guard.web_actions_enabled')) {
-    @set_time_limit(0); ignore_user_abort(true);
-    $ids = resolve_bulk_finding_ids(); $svc = new QuarantineService(); $ok=0; $fail=0;
-    foreach ($ids as $id) { try { $svc->quarantine($id, 'Bulk web panel quarantine'); $ok++; } catch (Throwable $e) { $fail++; } }
-    redirect('/findings?'.http_build_query(array_merge($_POST['back_query'] ?? [], ['bulk_result'=>'quarantine','bulk_ok'=>$ok,'bulk_fail'=>$fail])));
+if ($path === '/findings/bulk-status' && $method==='GET') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    try { echo json_encode((new BulkFindingActionService())->status((string)($_GET['id']??'')), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); }
+    catch (Throwable $e) { http_response_code(404); echo json_encode(['status'=>'failed','error'=>$e->getMessage()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); }
+    exit;
 }
-if ($path === '/findings/bulk-delete' && $method==='POST' && config('guard.web_actions_enabled')) {
-    @set_time_limit(0); ignore_user_abort(true);
-    $ids = resolve_bulk_finding_ids(); $svc = new QuarantineService(); $ok=0; $fail=0;
-    foreach ($ids as $id) { try { $svc->delete($id, 'Bulk web panel delete'); $ok++; } catch (Throwable $e) { $fail++; } }
-    redirect('/findings?'.http_build_query(array_merge($_POST['back_query'] ?? [], ['bulk_result'=>'delete','bulk_ok'=>$ok,'bulk_fail'=>$fail])));
+if (in_array($path, ['/findings/bulk-quarantine','/findings/bulk-delete'], true) && $method==='POST' && config('guard.web_actions_enabled')) {
+    $action=$path==='/findings/bulk-delete'?'delete':'quarantine';
+    try {
+        $job=(new BulkFindingActionService())->create($action, resolve_bulk_finding_ids());
+        start_background_bulk_finding_action($job);
+        redirect('/findings?'.http_build_query(array_merge($_POST['back_query']??[], ['bulk_job'=>$job])));
+    } catch (Throwable $e) {
+        redirect('/findings?'.http_build_query(array_merge($_POST['back_query']??[], ['bulk_start_error'=>$e->getMessage()])));
+    }
 }
 if ($path === '/rules/toggle' && $method==='POST') { $table=($_POST['table']??'rules')==='allowlist_rules'?'allowlist_rules':'rules'; DB::statement("UPDATE $table SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?", [now(), (int)$_POST['id']]); redirect('/rules'); }
 $threatIpClassifications = ['scanner','bruteforce','webshell_access','bot','direct_login','manual','unknown'];
