@@ -6,6 +6,7 @@ use App\Support\DB;
 class LogAnalyzerService
 {
     private int $skippedInserts = 0;
+    private ?array $knownSites = null;
     public function analyze(array $options = []): int
     {
         $count = 0; $this->skippedInserts = 0;
@@ -29,7 +30,7 @@ class LogAnalyzerService
             if (DB::first('SELECT id FROM log_events WHERE log_path=? AND line_number=? AND raw_line=?', [$path, $i+1, $lines[$i]])) continue;
             $uriHash = $parsed['uri'] !== null ? hash('sha256', $parsed['uri']) : null;
             try {
-                DB::insert('INSERT INTO log_events (site_id,log_path,line_number,ip,method,uri,uri_hash,status_code,user_agent,referer,event_type,risk,raw_line,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [null,$path,$i+1,$parsed['ip'],$parsed['method'],$parsed['uri'],$uriHash,$parsed['status'],$parsed['ua'],$parsed['referer'],$event['type'],$event['risk'],$lines[$i],$parsed['timestamp'] ?? now(),now()]);
+                DB::insert('INSERT INTO log_events (site_id,log_path,line_number,ip,method,uri,uri_hash,status_code,user_agent,referer,event_type,risk,raw_line,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$this->siteIdForLogPath($path),$path,$i+1,$parsed['ip'],$parsed['method'],$parsed['uri'],$uriHash,$parsed['status'],$parsed['ua'],$parsed['referer'],$event['type'],$event['risk'],$lines[$i],$parsed['timestamp'] ?? now(),now()]);
                 $count++;
             } catch (\Throwable $e) {
                 $this->skippedInserts++;
@@ -40,6 +41,16 @@ class LogAnalyzerService
         return $count;
     }
     private function deadlineReached(array $options): bool { return !empty($options['deadline_at']) && time() >= (int)$options['deadline_at']; }
+    private function siteIdForLogPath(string $path): ?int
+    {
+        $this->knownSites ??= DB::select('SELECT id,name,path FROM sites ORDER BY LENGTH(name) DESC');
+        $haystack = strtolower($path);
+        foreach ($this->knownSites as $site) {
+            $name = strtolower(trim((string)($site['name'] ?? '')));
+            if ($name !== '' && (str_contains($haystack, '/'.$name.'.') || str_contains($haystack, '/'.$name.'/') || str_contains($haystack, $name))) return (int)$site['id'];
+        }
+        return null;
+    }
     private function logMatchesSiteScope(string $log, array $sitePaths): bool { if (!$sitePaths) return true; foreach ($sitePaths as $path) { $site = basename((string)$path); if ($site !== '' && str_contains($log, $site)) return true; } return false; }
     private function parse(string $line): array
     {

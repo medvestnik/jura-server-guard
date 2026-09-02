@@ -279,6 +279,9 @@ mkdir -p storage/logs storage/framework/cache storage/framework/sessions storage
 configure_database_env
 append_env_value "JURA_PHP_BIN" "$PHP_BIN"
 append_env_value "JURA_WEB_ACTIONS_ENABLED" "false"
+append_env_value "JURA_FIREWALL_ACTIONS_ENABLED" "false"
+append_env_value "JURA_FIREWALL_CMD" "/usr/bin/firewall-cmd"
+append_env_value "JURA_FIREWALL_BLOCK_ZONE" "drop"
 append_env_value "JURA_BIND_HOST" "$BIND_HOST"
 append_env_value "JURA_PORT" "$PORT"
 append_env_value "JURA_SCAN_INTERVAL_MINUTES" "30"
