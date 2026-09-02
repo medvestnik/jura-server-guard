@@ -502,4 +502,11 @@ return [
     'File no longer exists at its original path or in quarantine.' => 'Файл больше не существует по исходному пути и не найден в карантине.',
     'The panel process cannot read this file.' => 'Процесс панели не может прочитать этот файл.',
     'Failed to read file content.' => 'Не удалось прочитать содержимое файла.',
+    'Delete from server' => 'Удалить с сервера',
+    'PERMANENTLY delete this file from the server? It cannot be restored.' => 'БЕЗВОЗВРАТНО удалить этот файл с сервера? Восстановить его будет невозможно.',
+    'File permanently deleted from the server.' => 'Файл безвозвратно удалён с сервера.',
+    'File could not be deleted:' => 'Не удалось удалить файл:',
+    'This page auto-refreshes every 4 seconds while a scan is active; refresh pauses while event details are open.' => 'Эта страница автоматически обновляется каждые 4 секунды, пока проверка активна; при открытых деталях события обновление приостанавливается.',
+    'Open log event' => 'Открыть строку лога',
+    'Emergency actions' => 'Экстренные действия',
 ];

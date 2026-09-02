@@ -502,4 +502,11 @@ return [
     'File no longer exists at its original path or in quarantine.' => 'Файл більше не існує за початковим шляхом і не знайдений у карантині.',
     'The panel process cannot read this file.' => 'Процес панелі не може прочитати цей файл.',
     'Failed to read file content.' => 'Не вдалося прочитати вміст файла.',
+    'Delete from server' => 'Видалити із сервера',
+    'PERMANENTLY delete this file from the server? It cannot be restored.' => 'БЕЗПОВОРОТНО видалити цей файл із сервера? Відновити його буде неможливо.',
+    'File permanently deleted from the server.' => 'Файл безповоротно видалено із сервера.',
+    'File could not be deleted:' => 'Не вдалося видалити файл:',
+    'This page auto-refreshes every 4 seconds while a scan is active; refresh pauses while event details are open.' => 'Ця сторінка автоматично оновлюється кожні 4 секунди, поки перевірка активна; при відкритих деталях події оновлення призупиняється.',
+    'Open log event' => 'Відкрити рядок журналу',
+    'Emergency actions' => 'Термінові дії',
 ];

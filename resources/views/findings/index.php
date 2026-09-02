@@ -18,6 +18,8 @@
 <p class="muted"><?= e(t('Found: :n', ['n'=>$total])) ?></p>
 <?php if(isset($_GET['bulk_result'])): $bok=(int)($_GET['bulk_ok']??0); $bfail=(int)($_GET['bulk_fail']??0); ?><div class="notice <?= $bfail?'warning':'success' ?>"><?= e(t($_GET['bulk_result']==='delete' ? 'Deleted: :ok, failed: :fail' : 'Quarantined: :ok, failed: :fail', ['ok'=>$bok,'fail'=>$bfail])) ?></div><?php endif ?>
 <?php if(isset($_GET['quarantined'])): ?><div class="notice success"><?= e(t('File moved to quarantine.')) ?></div><?php endif ?>
+<?php if(isset($_GET['deleted'])): ?><div class="notice success"><?= e(t('File permanently deleted from the server.')) ?></div><?php endif ?>
+<?php if(isset($_GET['delete_error'])): ?><div class="notice danger-notice"><?= e(t('File could not be deleted:')) ?> <?= e($_GET['delete_error']) ?></div><?php endif ?>
 
 <form method="post" id="bulkForm" onsubmit="return confirmBulk(event)">
   <?php foreach(['risk','status','type','user','site','path','date_from','date_to'] as $bk): ?><input type="hidden" name="back_query[<?= e($bk) ?>]" value="<?= e($_GET[$bk] ?? '') ?>"><?php endforeach ?>
@@ -32,7 +34,7 @@
     <?php foreach($findings as $f): ?><tr>
       <?php if($actionsEnabled): ?><td><input type="checkbox" class="rowcheck" name="ids[]" value="<?= e($f['id']) ?>"></td><?php endif ?>
       <td><span class="badge <?= e($f['risk']) ?>"><?= e(t($f['risk'])) ?></span></td><td><?= e($f['type']) ?></td><td><?= e($f['user_name'] ?? '') ?></td><td><?= e($f['site_name'] ?? '') ?></td><td><code><?= e($f['path']) ?></code></td><td><?= e(mb_strimwidth($f['matched_rules'] ?? '',0,90,'…')) ?></td><td><?= e($f['first_seen_at']) ?></td><td><?= e($f['last_seen_at']) ?></td><td><?= e(t($f['status'])) ?></td>
-      <td class="actions-cell"><a class="btn small" href="/findings/<?= e($f['id']) ?>#file-content"><?= e(t('View content')) ?></a><?php if($actionsEnabled && $f['status']!=='quarantined'): ?> <button class="btn danger small" type="submit" formaction="/finding/quarantine" name="id" value="<?= e($f['id']) ?>" onclick="event.stopPropagation();return confirm(<?= e(json_encode(t('Move file to quarantine?'))) ?>)"><?= e(t('Quarantine')) ?></button><input type="hidden" name="return_to" value="findings"><?php endif ?></td>
+      <td class="actions-cell"><a class="btn small" href="/findings/<?= e($f['id']) ?>#file-content"><?= e(t('View content')) ?></a><?php if($actionsEnabled && !in_array($f['status'],['quarantined','deleted'],true)): ?> <button class="btn danger small" type="submit" formaction="/finding/quarantine" name="id" value="<?= e($f['id']) ?>" onclick="event.stopPropagation();return confirm(<?= e(json_encode(t('Move file to quarantine?'))) ?>)"><?= e(t('Quarantine')) ?></button><input type="hidden" name="return_to" value="findings"><?php endif ?><?php if($actionsEnabled && $f['status']!=='deleted'): ?> <button class="btn danger small" type="submit" formaction="/finding/delete" name="id" value="<?= e($f['id']) ?>" onclick="event.stopPropagation();return confirm(<?= e(json_encode(t('PERMANENTLY delete this file from the server? It cannot be restored.'))) ?>)"><?= e(t('Delete from server')) ?></button><?php endif ?></td>
     </tr><?php endforeach ?>
   </table>
 </form>
@@ -41,7 +43,7 @@
 function toggleAllRows(cb){document.querySelectorAll('.rowcheck').forEach(function(c){c.checked=cb.checked;});}
 function toggleSelectAllFiltered(cb){document.getElementById('selectAllFilteredInput').value=cb.checked?'1':'0';document.querySelectorAll('.rowcheck').forEach(function(c){c.checked=cb.checked;c.disabled=cb.checked;});}
 function confirmBulk(e){
-  if(e.submitter && e.submitter.formAction.indexOf('/finding/quarantine')!==-1) return true;
+  if(e.submitter && (e.submitter.formAction.indexOf('/finding/quarantine')!==-1 || e.submitter.formAction.indexOf('/finding/delete')!==-1)) return true;
   var selectAll=document.getElementById('selectAllFilteredInput').value==='1';
   var n=selectAll?<?= (int)$total ?>:document.querySelectorAll('.rowcheck:checked').length;
   if(n===0){alert(<?= e(json_encode(t('Nothing selected.'))) ?>);return false;}
