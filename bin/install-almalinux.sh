@@ -296,6 +296,8 @@ append_env_value "JURA_SYSTEMCTL_CMD" "/usr/bin/systemctl"
 append_env_value "JURA_BIND_HOST" "$BIND_HOST"
 append_env_value "JURA_PORT" "$PORT"
 append_env_value "JURA_SCAN_INTERVAL_MINUTES" "30"
+append_env_value "JURA_TIMER_SCAN_PROFILE" "fast"
+append_env_value "JURA_LOG_SCAN_INTERVAL_MINUTES" "5"
 append_env_value "JURA_SCAN_OLD_DUBL_BY_DEFAULT" "false"
 append_env_value "JURA_SCAN_STORAGE_BY_DEFAULT" "false"
 append_env_value "JURA_HASH_ALL_FILES" "false"
@@ -326,30 +328,9 @@ Environment=APP_ENV=production
 [Install]
 WantedBy=multi-user.target
 EOF
-cat >/etc/systemd/system/jura-server-guard-scan.service <<EOF
-[Unit]
-Description=Jura Server Guard scheduled scan
-
-[Service]
-Type=oneshot
-WorkingDirectory=$APP_DIR
-ExecStart=$PHP_BIN $APP_DIR/artisan guard:scan
-EOF
-cat >/etc/systemd/system/jura-server-guard-scan.timer <<EOF
-[Unit]
-Description=Run Jura Server Guard scan every 30 minutes
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=30min
-Unit=jura-server-guard-scan.service
-
-[Install]
-WantedBy=timers.target
-EOF
 systemctl daemon-reload
 systemctl enable --now jura-server-guard.service
-systemctl enable --now jura-server-guard-scan.timer
+JURA_APP_DIR="$APP_DIR" JURA_PHP_BIN="$PHP_BIN" bash "$APP_DIR/bin/install-scan-timers.sh"
 cat <<EOF
 Jura Server Guard installed.
 Panel: http://$BIND_HOST:$PORT

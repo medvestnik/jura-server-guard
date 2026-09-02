@@ -27,14 +27,26 @@ class QuarantineService
     {
         $finding = DB::first('SELECT * FROM findings WHERE id=?', [$findingId]);
         if (!$finding) throw new RuntimeException('Finding not found.');
-        if (($finding['status'] ?? '') === 'deleted') throw new RuntimeException('File is already marked as deleted.');
+        if (($finding['status'] ?? '') === 'deleted') return 0;
         if (($finding['status'] ?? '') === 'quarantined') {
             $item = DB::first("SELECT * FROM quarantine_items WHERE finding_id=? AND status='quarantined' ORDER BY id DESC LIMIT 1", [$findingId]);
             if (!$item) throw new RuntimeException('Quarantine item not found.');
             if (is_file($item['quarantine_path']) && !@unlink($item['quarantine_path'])) throw new RuntimeException('Failed to permanently delete quarantined file.');
             DB::statement('UPDATE quarantine_items SET status=?, reason=?, updated_at=? WHERE id=?', ['deleted', $reason, now(), $item['id']]);
-            DB::statement('UPDATE findings SET status=?, updated_at=? WHERE id=?', ['deleted', now(), $findingId]);
+            DB::statement('UPDATE findings SET status=?, updated_at=? WHERE path=? AND status<>?', ['deleted', now(), $finding['path'], 'deleted']);
             return (int) $item['id'];
+        }
+        // A previous action or another finding for the same physical path may already have
+        // removed the file. The requested end state is satisfied; keep the database in sync
+        // instead of reporting a misleading bulk-operation failure.
+        if (is_link($finding['path'])) {
+            if (!@unlink($finding['path'])) throw new RuntimeException('Failed to permanently delete symbolic link.');
+            DB::statement('UPDATE findings SET status=?, updated_at=? WHERE path=? AND status<>?', ['deleted', now(), $finding['path'], 'deleted']);
+            return 0;
+        }
+        if (!is_file($finding['path'])) {
+            DB::statement('UPDATE findings SET status=?, updated_at=? WHERE path=? AND status<>?', ['deleted', now(), $finding['path'], 'deleted']);
+            return 0;
         }
         $id = $this->quarantine($findingId, $reason);
         $item = DB::first('SELECT * FROM quarantine_items WHERE id=?', [$id]);
@@ -42,7 +54,7 @@ class QuarantineService
             throw new RuntimeException('Failed to permanently delete quarantined file; it remains quarantined and can be restored.');
         }
         DB::statement('UPDATE quarantine_items SET status=?, updated_at=? WHERE id=?', ['deleted', now(), $id]);
-        DB::statement('UPDATE findings SET status=?, updated_at=? WHERE id=?', ['deleted', now(), $findingId]);
+        DB::statement('UPDATE findings SET status=?, updated_at=? WHERE path=? AND status<>?', ['deleted', now(), $finding['path'], 'deleted']);
         return $id;
     }
 
