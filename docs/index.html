@@ -99,7 +99,7 @@ ss -lntp | grep 8765</code></pre>
 /opt/php83/bin/php artisan guard:telegram-test --message="Jura Server Guard Telegram test"
 
 # затем установите systemd-мониторы SSH-ключей, cron и процессов
-sudo bin/install-security-monitors.sh</code></pre>
+sudo bash bin/install-security-monitors.sh</code></pre>
       </section>
 
       <section id="telegram" data-title="telegram bot botfather token chat id getupdates notifications">
@@ -130,7 +130,7 @@ JURA_TELEGRAM_CHAT_ID=123456789</code></pre>
         </div>
         <p>Установка создаёт baseline без Telegram-шума по уже существующим ключам, cron-заданиям и процессам, затем включает systemd units:</p>
         <pre><code class="language-bash">cd /opt/jura-server-guard
-sudo bin/install-security-monitors.sh</code></pre>
+sudo bash bin/install-security-monitors.sh</code></pre>
         <pre><code class="language-text">jura-server-guard-ssh-keys.path      # immediate authorized_keys watch
 jura-server-guard-user-cron.timer    # every minute
 jura-server-guard-processes.timer    # every minute</code></pre>
@@ -290,11 +290,10 @@ cd /opt/jura-server-guard
 /opt/php83/bin/php artisan config:cache
 
 # install/update host-level systemd monitors: SSH keys, user cron, suspicious processes
-sudo bin/install-security-monitors.sh
+sudo bash bin/install-security-monitors.sh
 # переустановить unit-файлы, включить и перезапустить оба таймера
-sudo bin/install-scan-timers.sh
+sudo bash bin/install-scan-timers.sh
 
-systemctl restart jura-server-guard
 systemctl status jura-server-guard --no-pager -l
 systemctl status jura-server-guard-scan.timer --no-pager -l
 systemctl status jura-server-guard-logs.timer --no-pager -l
