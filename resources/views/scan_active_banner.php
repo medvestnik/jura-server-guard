@@ -9,8 +9,17 @@
     <span class="wide"><b><?= e(t('Current path:')) ?></b> <code><?= e($run['current_path']??'n/a') ?></code></span><span><b><?= e(t('Started at:')) ?></b> <?= e($started??'n/a') ?></span><span><b><?= e(t('Elapsed time:')) ?></b> <?= e($elapsed) ?></span><span><b><?= e(t('Last heartbeat:')) ?></b> <?= e($run['last_heartbeat_at']??'n/a') ?></span><span><b><?= e(t('Heartbeat age:')) ?></b> <?= e(isset($ctx['heartbeat_age']) ? $ctx['heartbeat_age'].'s' : 'n/a') ?></span>
     <span class="wide"><b><?= e(t('Progress message:')) ?></b> <?= e($run['progress_message']??($lock['command']??t('Starting background scan'))) ?></span>
   </div>
-  <p class="auto-refresh"><?= e(t('This page auto-refreshes every 4 seconds while a scan is active.')) ?></p>
+  <p class="auto-refresh"><?= e(t('This page auto-refreshes every 4 seconds while a scan is active; refresh pauses while event details are open.')) ?></p>
   <?php if($stale): ?><form method="post" action="/scan/cleanup-stale" style="display:inline"><button class="btn danger small"><?= e(t('Cleanup stale scan')) ?></button></form> <form method="post" action="/scan/force-unlock" style="display:inline"><button class="btn danger small"><?= e(t('Force unlock')) ?></button></form><?php endif ?>
 </div>
-<script>setTimeout(()=>location.reload(),4000)</script>
+<script>
+(function refreshWhenIdle(){
+  setTimeout(function(){
+    var detailsOpen=Array.from(document.querySelectorAll('.details-row')).some(function(row){return row.style.display!=='none';});
+    var editing=/^(INPUT|SELECT|TEXTAREA)$/.test((document.activeElement||{}).tagName||'');
+    if(detailsOpen||editing){refreshWhenIdle();return;}
+    location.reload();
+  },4000);
+})();
+</script>
 <?php endif ?>

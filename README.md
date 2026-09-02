@@ -222,7 +222,9 @@ The original SHA-256, owner, group, permissions, mtime, original path, and quara
 When `JURA_WEB_ACTIONS_ENABLED=true`, the **Findings** page shows a checkbox per row plus
 "Quarantine selected" and "Delete selected" buttons, so a mass-infection incident (dozens or
 hundreds of matched webshells from one signature) can be cleaned up in one action instead of
-one file at a time. If more findings match the current filter than are shown on the page (the
+one file at a time. Every non-deleted row and finding detail page also has a **Delete from
+server** button for permanent single-file deletion. If more findings match the current filter
+than are shown on the page (the
 list is capped at 500 rows), a **Select all N matching current filter** checkbox applies the
 action to every matching finding server-side, not just the visible ones.
 
@@ -230,7 +232,8 @@ action to every matching finding server-side, not just the visible ones.
 **Restore**). **Delete** is new and permanent: the file is captured into `quarantine_items`
 (SHA-256, owner, permissions, path, reason) for the audit trail exactly like quarantine, then
 immediately removed from disk with no way to restore it — the finding and quarantine item are
-both marked `deleted`. Both actions require an explicit confirmation dialog showing how many
+both marked `deleted`. If the finding was already quarantined, **Delete from server** removes
+its quarantine copy instead. Both actions require an explicit confirmation dialog showing how many
 files will be affected, and both are always disabled unless `JURA_WEB_ACTIONS_ENABLED=true`
 (same gate as the existing single-file quarantine action).
 
@@ -322,21 +325,30 @@ event, so the site, requested URI/file, log path, and detection date are shown b
 and recorded automatically in `threat_ip_evidence`. If the IP is already present, the page
 says so explicitly and updates the existing record instead of creating a duplicate.
 
-Optional firewalld blocking from the local panel is disabled by default and is separate from
-ordinary web quarantine actions:
+Optional firewall blocking from the local panel is disabled by default and is separate from
+ordinary web quarantine actions. In `auto` mode Jura uses an active firewalld installation
+when available and otherwise falls back to `iptables`/`ip6tables`:
 
 ```env
 JURA_FIREWALL_ACTIONS_ENABLED=true
+JURA_FIREWALL_BACKEND=auto
 JURA_FIREWALL_CMD=/usr/bin/firewall-cmd
 JURA_FIREWALL_BLOCK_ZONE=drop
+JURA_IPTABLES_CMD=/usr/sbin/iptables
+JURA_IPTABLES_SAVE_CMD=/usr/sbin/iptables-save
+JURA_IPTABLES_RULES_FILE=/etc/sysconfig/iptables
+JURA_IPTABLES_ENABLE_SERVICE=true
 ```
 
-The **Block** action adds the public IP as a source to the configured firewalld drop zone in
-both runtime and permanent configurations. It reports an already-existing rule without
-duplicating it. Trusted IPs and private, loopback, link-local, or reserved ranges are refused
-to reduce the chance of locking out legitimate management access. The installed panel runs
-as root; if a custom deployment runs it as another user, that process must be granted only
-the narrowly required firewalld permission.
+The **Block** action adds the public IP to both runtime and persistent firewall configuration.
+For firewalld it uses the configured drop zone. For IPv4 iptables it checks and inserts an
+`INPUT -s IP -j DROP` rule, saves the current rules using the AlmaLinux iptables init script
+(or `iptables-save` as a fallback), and enables `iptables.service` for restore after reboot.
+IPv6 uses the equivalent `ip6tables` commands and service. Set `JURA_FIREWALL_BACKEND` to
+`firewalld` or `iptables` to force one implementation. Existing rules are detected before
+insertion. Trusted IPs and private, loopback, link-local, or reserved ranges are refused to
+reduce the chance of locking out legitimate management access. The panel process needs the
+permissions required to manage the selected firewall backend and persistent rules file.
 
 CLI equivalents:
 

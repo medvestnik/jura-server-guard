@@ -25,6 +25,17 @@ class QuarantineService
     }
     public function delete(int $findingId, string $reason = 'CLI delete'): int
     {
+        $finding = DB::first('SELECT * FROM findings WHERE id=?', [$findingId]);
+        if (!$finding) throw new RuntimeException('Finding not found.');
+        if (($finding['status'] ?? '') === 'deleted') throw new RuntimeException('File is already marked as deleted.');
+        if (($finding['status'] ?? '') === 'quarantined') {
+            $item = DB::first("SELECT * FROM quarantine_items WHERE finding_id=? AND status='quarantined' ORDER BY id DESC LIMIT 1", [$findingId]);
+            if (!$item) throw new RuntimeException('Quarantine item not found.');
+            if (is_file($item['quarantine_path']) && !@unlink($item['quarantine_path'])) throw new RuntimeException('Failed to permanently delete quarantined file.');
+            DB::statement('UPDATE quarantine_items SET status=?, reason=?, updated_at=? WHERE id=?', ['deleted', $reason, now(), $item['id']]);
+            DB::statement('UPDATE findings SET status=?, updated_at=? WHERE id=?', ['deleted', now(), $findingId]);
+            return (int) $item['id'];
+        }
         $id = $this->quarantine($findingId, $reason);
         $item = DB::first('SELECT * FROM quarantine_items WHERE id=?', [$id]);
         if (!$item || !is_file($item['quarantine_path']) || !@unlink($item['quarantine_path'])) {
