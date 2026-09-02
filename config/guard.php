@@ -1,6 +1,8 @@
 <?php
 return [
     'default_locale' => env_value('JURA_DEFAULT_LOCALE', 'ru'),
+    'pagination_options' => array_values(array_filter(array_map('trim', explode(',', (string) env_value('JURA_PAGINATION_OPTIONS', '20,50,100,200,500,all'))))),
+    'pagination_default' => trim((string) env_value('JURA_PAGINATION_DEFAULT', '50')),
     'scan_roots' => array_values(array_filter(array_map('trim', explode(',', (string) env_value('JURA_SCAN_ROOTS', '/var/www'))))),
     'site_pattern' => env_value('JURA_SITE_PATTERN', '/var/www/*/data/www/*'),
     'log_paths' => [

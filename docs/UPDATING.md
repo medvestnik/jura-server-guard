@@ -139,7 +139,8 @@ comm -23 \
 Refresh the systemd units, restart both timers even if they were already active, and restart
 the panel. `install-scan-timers.sh` performs `daemon-reload`, enables both timers for boot,
 restarts them so new intervals/profile values from `.env` take effect, and then restarts
-`jura-server-guard.service` when that unit is installed:
+and enables `jura-server-guard.service` when that unit is installed. After this block the
+panel and both scheduled tasks must be running:
 
 ```bash
 cd /opt/jura-server-guard
@@ -164,3 +165,40 @@ Log in through the panel and check the dashboard renders without errors. If the
 release changed `JURA_DEFAULT_LOCALE` behavior (see `README.md` → "Web panel
 language"), confirm the default language shown to a fresh browser session matches
 what you expect, and set `JURA_DEFAULT_LOCALE` explicitly in `.env` if not.
+
+## 10. If the panel does not open after the update
+
+An SSH tunnel error such as `open failed: connect failed: Connection refused` means the
+SSH connection itself is working, but nothing is listening on `127.0.0.1:8765` on the
+server. Start the panel, verify its status, and check the listening socket:
+
+```bash
+systemctl enable --now jura-server-guard.service
+systemctl status jura-server-guard.service --no-pager -l
+ss -ltnp | grep ':8765' || true
+```
+
+The expected socket is `127.0.0.1:8765`. If the service is not active or the socket is
+missing, inspect the service journal and the installed unit:
+
+```bash
+journalctl -u jura-server-guard.service -n 100 --no-pager
+systemctl cat jura-server-guard.service
+```
+
+Test the application directly to separate an application startup error from a systemd
+problem:
+
+```bash
+cd /opt/jura-server-guard
+/opt/php83/bin/php artisan serve --host=127.0.0.1 --port=8765
+```
+
+If the direct server starts successfully, stop it with `Ctrl+C`, then return control to
+systemd and verify the port again:
+
+```bash
+systemctl restart jura-server-guard.service
+systemctl status jura-server-guard.service --no-pager -l
+ss -ltnp | grep ':8765' || true
+```
