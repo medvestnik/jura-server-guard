@@ -21,16 +21,16 @@
 <?php if(isset($_GET['deleted'])): ?><div class="notice success"><?= e(t('File permanently deleted from the server.')) ?></div><?php endif ?>
 <?php if(isset($_GET['delete_error'])): ?><div class="notice danger-notice"><?= e(t('File could not be deleted:')) ?> <?= e($_GET['delete_error']) ?></div><?php endif ?>
 
-<form method="post" id="bulkForm" onsubmit="return confirmBulk(event)">
+<form method="post" id="bulkForm" autocomplete="off" onsubmit="return confirmBulk(event)">
   <?php foreach(['risk','status','type','user','site','path','date_from','date_to'] as $bk): ?><input type="hidden" name="back_query[<?= e($bk) ?>]" value="<?= e($_GET[$bk] ?? '') ?>"><?php endforeach ?>
   <input type="hidden" name="select_all_filtered" id="selectAllFilteredInput" value="0">
   <?php if($actionsEnabled): ?><div class="card actions">
-    <?php if($total > count($findings)): ?><label><input type="checkbox" id="selectAllFilteredCheckbox" onchange="toggleSelectAllFiltered(this)"> <?= e(t('Select all :n matching current filter', ['n'=>$total])) ?></label><?php endif ?>
+    <?php if($total > count($findings)): ?><label><input type="checkbox" id="selectAllFilteredCheckbox"> <?= e(t('Select all :n matching current filter', ['n'=>$total])) ?></label><?php endif ?>
     <button type="submit" formaction="/findings/bulk-quarantine" class="btn danger"><?= e(t('Quarantine selected')) ?></button>
     <button type="submit" formaction="/findings/bulk-delete" class="btn danger"><?= e(t('Delete selected')) ?></button>
   </div><?php endif ?>
   <table>
-    <tr><?php if($actionsEnabled): ?><th data-no-sort><input type="checkbox" onchange="toggleAllRows(this)"></th><?php endif ?><th><?= e(t('Risk')) ?></th><th><?= e(t('Type')) ?></th><th><?= e(t('User')) ?></th><th><?= e(t('Site')) ?></th><th><?= e(t('Path')) ?></th><th><?= e(t('Matched rules')) ?></th><th><?= e(t('First seen')) ?></th><th><?= e(t('Last seen')) ?></th><th><?= e(t('Status')) ?></th><th data-no-sort><?= e(t('Actions')) ?></th></tr>
+    <tr><?php if($actionsEnabled): ?><th data-no-sort><input type="checkbox" id="selectAllVisibleCheckbox" aria-label="<?= e(t('Select all')) ?>"></th><?php endif ?><th><?= e(t('Risk')) ?></th><th><?= e(t('Type')) ?></th><th><?= e(t('User')) ?></th><th><?= e(t('Site')) ?></th><th><?= e(t('Path')) ?></th><th><?= e(t('Matched rules')) ?></th><th><?= e(t('First seen')) ?></th><th><?= e(t('Last seen')) ?></th><th><?= e(t('Status')) ?></th><th data-no-sort><?= e(t('Actions')) ?></th></tr>
     <?php foreach($findings as $f): ?><tr>
       <?php if($actionsEnabled): ?><td><input type="checkbox" class="rowcheck" name="ids[]" value="<?= e($f['id']) ?>"></td><?php endif ?>
       <td><span class="badge <?= e($f['risk']) ?>"><?= e(t($f['risk'])) ?></span></td><td><?= e($f['type']) ?></td><td><?= e($f['user_name'] ?? '') ?></td><td><?= e($f['site_name'] ?? '') ?></td><td><code><?= e($f['path']) ?></code></td><td><?= e(mb_strimwidth($f['matched_rules'] ?? '',0,90,'…')) ?></td><td><?= e($f['first_seen_at']) ?></td><td><?= e($f['last_seen_at']) ?></td><td><?= e(t($f['status'])) ?></td>
@@ -40,8 +40,37 @@
 </form>
 <?php if(!$actionsEnabled): ?><p class="muted"><?= e(t('Web actions disabled. Use CLI:')) ?> <code>php artisan guard:quarantine &lt;finding_id&gt;</code></p><?php endif ?>
 <script>
-function toggleAllRows(cb){document.querySelectorAll('.rowcheck').forEach(function(c){c.checked=cb.checked;});}
-function toggleSelectAllFiltered(cb){document.getElementById('selectAllFilteredInput').value=cb.checked?'1':'0';document.querySelectorAll('.rowcheck').forEach(function(c){c.checked=cb.checked;c.disabled=cb.checked;});}
+var bulkForm=document.getElementById('bulkForm');
+var visibleAll=document.getElementById('selectAllVisibleCheckbox');
+var filteredAll=document.getElementById('selectAllFilteredCheckbox');
+var filteredInput=document.getElementById('selectAllFilteredInput');
+function rowChecks(){return Array.from(bulkForm.querySelectorAll('.rowcheck'));}
+function syncVisibleAll(){
+  if(!visibleAll)return;
+  var rows=rowChecks(),checked=rows.filter(function(c){return c.checked;}).length;
+  visibleAll.checked=rows.length>0&&checked===rows.length;
+  visibleAll.indeterminate=checked>0&&checked<rows.length;
+}
+function toggleAllRows(checked){
+  if(filteredAll)filteredAll.checked=false;
+  filteredInput.value='0';
+  rowChecks().forEach(function(c){c.disabled=false;c.checked=checked;});
+  syncVisibleAll();
+}
+function toggleSelectAllFiltered(checked){
+  filteredInput.value=checked?'1':'0';
+  rowChecks().forEach(function(c){c.checked=checked;c.disabled=checked;});
+  if(visibleAll){visibleAll.checked=checked;visibleAll.indeterminate=false;}
+}
+if(visibleAll)visibleAll.addEventListener('change',function(){toggleAllRows(this.checked);});
+if(filteredAll)filteredAll.addEventListener('change',function(){toggleSelectAllFiltered(this.checked);});
+rowChecks().forEach(function(c){c.addEventListener('change',syncVisibleAll);});
+// Browsers may restore only the header checkbox after a filtered navigation. Always start from
+// a consistent state so a checked "all" box can never submit an empty selection.
+filteredInput.value='0';
+if(filteredAll)filteredAll.checked=false;
+if(visibleAll){visibleAll.checked=false;visibleAll.indeterminate=false;}
+rowChecks().forEach(function(c){c.checked=false;c.disabled=false;});
 function confirmBulk(e){
   if(e.submitter && (e.submitter.formAction.indexOf('/finding/quarantine')!==-1 || e.submitter.formAction.indexOf('/finding/delete')!==-1)) return true;
   var selectAll=document.getElementById('selectAllFilteredInput').value==='1';

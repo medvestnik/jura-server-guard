@@ -184,8 +184,10 @@ tail -f /root/first-scan.log
 ```
 
 For ongoing scans you don't need cron at all: the installer's systemd timer
-(`jura-server-guard-scan.timer`, see below) already runs `guard:scan` automatically in the
-background every `JURA_SCAN_INTERVAL_MINUTES` (default 30). Cron is only useful here if you
+(`jura-server-guard-scan.timer`, see below) runs file scans automatically in the
+background every `JURA_SCAN_INTERVAL_MINUTES` (default 30). A separate
+`jura-server-guard-logs.timer` runs `guard:logs` every `JURA_LOG_SCAN_INTERVAL_MINUTES`
+(default 5), so fresh suspicious events do not have to wait for a long file scan. Cron is only useful here if you
 want a first baseline scan to kick off once at a specific unattended time (e.g. overnight)
 before the recurring timer takes over:
 
@@ -536,9 +538,14 @@ The installer creates:
 ```text
 /etc/systemd/system/jura-server-guard-scan.service
 /etc/systemd/system/jura-server-guard-scan.timer
+/etc/systemd/system/jura-server-guard-logs.service
+/etc/systemd/system/jura-server-guard-logs.timer
 ```
 
-Timer period: every 30 minutes by default. The app-level scan lock prevents overlapping timer/manual scans.
+File scans run every 30 minutes and log analysis every 5 minutes by default. Configure them
+with `JURA_SCAN_INTERVAL_MINUTES`, `JURA_TIMER_SCAN_PROFILE`, and
+`JURA_LOG_SCAN_INTERVAL_MINUTES`, then rerun `sudo bash bin/install-scan-timers.sh`.
+The app-level scan lock prevents overlapping timer/manual scans.
 
 Manual cron alternative:
 

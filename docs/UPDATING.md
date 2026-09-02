@@ -18,10 +18,10 @@ ps aux | grep -E '[a]rtisan guard:scan|[p]hp.*jura-server-guard'
 
 Proceed only if it reports `Scan running: no`.
 
-## 2. Stop the timer and the panel
+## 2. Stop the timers and the panel
 
 ```bash
-systemctl disable --now jura-server-guard-scan.timer 2>/dev/null || true
+systemctl stop jura-server-guard-scan.timer jura-server-guard-logs.timer 2>/dev/null || true
 systemctl stop jura-server-guard
 ```
 
@@ -120,18 +120,35 @@ mysql -u jsg -p"$DBPASS" jura_server_guard -e "SHOW COLUMNS FROM scan_runs;"
 mysql -u jsg -p"$DBPASS" jura_server_guard -e "SHOW COLUMNS FROM log_events;"
 ```
 
-## 8. Restart the panel and re-enable the scan timer
+## 8. Install the timers and restart the panel
 
-Both services were stopped in step 2 — **the timer must be explicitly re-enabled**,
-otherwise scheduled scans silently stay off after the update:
+If `.env.example` gained new options, first list keys that are still missing from the live
+`.env` (this prints key names only, not passwords or tokens), add the settings you need, and
+rebuild the cached configuration:
 
 ```bash
-systemctl daemon-reload
-systemctl start jura-server-guard
-systemctl enable --now jura-server-guard-scan.timer
+cd /opt/jura-server-guard
+comm -23 \
+  <(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' .env.example | sort -u) \
+  <(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' .env | sort -u)
+
+# After reviewing/editing .env:
+"$JURA_PHP_BIN" artisan config:cache
+```
+
+Refresh the systemd units, restart both timers even if they were already active, and restart
+the panel. `install-scan-timers.sh` performs `daemon-reload`, enables both timers for boot,
+and restarts them so new intervals/profile values from `.env` take effect:
+
+```bash
+cd /opt/jura-server-guard
+sudo bash bin/install-scan-timers.sh
+systemctl restart jura-server-guard
 
 systemctl status jura-server-guard --no-pager -l
 systemctl status jura-server-guard-scan.timer --no-pager -l
+systemctl status jura-server-guard-logs.timer --no-pager -l
+systemctl list-timers 'jura-server-guard-*' --no-pager
 ss -lntp | grep 8765
 ```
 

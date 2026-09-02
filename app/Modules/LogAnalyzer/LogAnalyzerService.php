@@ -2,6 +2,7 @@
 namespace App\Modules\LogAnalyzer;
 
 use App\Support\DB;
+use App\Support\ScanLock;
 
 class LogAnalyzerService
 {
@@ -9,14 +10,20 @@ class LogAnalyzerService
     private ?array $knownSites = null;
     public function analyze(array $options = []): int
     {
-        $count = 0; $this->skippedInserts = 0;
-        foreach (config('guard.log_paths') as $pattern) foreach (glob($pattern) ?: [] as $log) {
-            if ($this->deadlineReached($options)) break 2;
-            if (!$this->logMatchesSiteScope($log, $options['site_paths'] ?? [])) continue;
-            $count += $this->analyzeFile($log, $options);
+        $lock = new ScanLock(storage_path('locks/log-analysis.lock'));
+        if (empty($options['no_lock'])) $lock->acquire('log analysis', !empty($options['force']));
+        try {
+            $count = 0; $this->skippedInserts = 0;
+            foreach (config('guard.log_paths') as $pattern) foreach (glob($pattern) ?: [] as $log) {
+                if ($this->deadlineReached($options)) break 2;
+                if (!$this->logMatchesSiteScope($log, $options['site_paths'] ?? [])) continue;
+                $count += $this->analyzeFile($log, $options);
+            }
+            if ($this->skippedInserts > 0) fwrite(STDERR, "Skipped log events due to DB insert errors: {$this->skippedInserts}\n");
+            return $count;
+        } finally {
+            if (empty($options['no_lock'])) $lock->release();
         }
-        if ($this->skippedInserts > 0) fwrite(STDERR, "Skipped log events due to DB insert errors: {$this->skippedInserts}\n");
-        return $count;
     }
     private function analyzeFile(string $path, array $options = []): int
     {

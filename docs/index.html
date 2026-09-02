@@ -270,7 +270,7 @@ wp plugin verify-checksums plugin-slug --path=/path/to/site --allow-root</code><
       <section id="updating" data-title="updating jura server guard git pull rsync migrate composer service monitors">
         <div class="section-heading"><p class="kicker">Updating</p><h2>Обновление Jura Server Guard</h2></div>
         <p>Перед обновлением остановите timer и сервис, подтяните репозиторий, синхронизируйте код в <code>/opt/jura-server-guard</code>, примените миграции и запустите сервис. Если обновление добавляет host-level monitors, после синхронизации запустите <code>bin/install-security-monitors.sh</code>.</p>
-        <pre><code class="language-bash">systemctl disable --now jura-server-guard-scan.timer
+        <pre><code class="language-bash">systemctl stop jura-server-guard-scan.timer jura-server-guard-logs.timer
 systemctl stop jura-server-guard
 
 cd /root/jura-server-guard
@@ -286,13 +286,18 @@ rsync -a --delete \
 cd /opt/jura-server-guard
 /opt/php83/bin/php artisan migrate
 
+# Если добавлены или изменены параметры .env, отредактируйте .env и примените их:
+/opt/php83/bin/php artisan config:cache
+
 # install/update host-level systemd monitors: SSH keys, user cron, suspicious processes
 sudo bin/install-security-monitors.sh
+# переустановить unit-файлы, включить и перезапустить оба таймера
+sudo bin/install-scan-timers.sh
 
-systemctl daemon-reload
-systemctl start jura-server-guard
-systemctl enable --now jura-server-guard-scan.timer
+systemctl restart jura-server-guard
 systemctl status jura-server-guard --no-pager -l
+systemctl status jura-server-guard-scan.timer --no-pager -l
+systemctl status jura-server-guard-logs.timer --no-pager -l
 systemctl status jura-server-guard-ssh-keys.path --no-pager
 systemctl list-timers | grep jura-server-guard</code></pre>
         <div class="callout tip"><strong>Tip.</strong> Если <code>composer.json</code> и <code>composer.lock</code> не изменились, Composer можно пропустить. Если Composer нужен, определяйте доступный <code>composer</code> или <code>composer.phar</code> на сервере; не полагайтесь на жёсткий путь <code>/root/jura-server-guard/composer.phar</code>.</div>

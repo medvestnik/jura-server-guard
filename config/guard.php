@@ -58,6 +58,7 @@ return [
     'scan_profile' => env_value('JURA_SCAN_PROFILE', 'fast'),
     'timer_scan_profile' => env_value('JURA_TIMER_SCAN_PROFILE', 'fast'),
     'scan_interval_minutes' => (int) env_value('JURA_SCAN_INTERVAL_MINUTES', 30),
+    'log_scan_interval_minutes' => (int) env_value('JURA_LOG_SCAN_INTERVAL_MINUTES', 5),
     'max_file_read_bytes' => (int) env_value('JURA_MAX_FILE_READ_BYTES', 262144),
     'ai_signatures_enabled' => bool_env('JURA_AI_SIGNATURES_ENABLED', false),
     'ai_provider' => env_value('JURA_AI_PROVIDER', 'openai'),
