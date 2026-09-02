@@ -545,6 +545,8 @@ The installer creates:
 File scans run every 30 minutes and log analysis every 5 minutes by default. Configure them
 with `JURA_SCAN_INTERVAL_MINUTES`, `JURA_TIMER_SCAN_PROFILE`, and
 `JURA_LOG_SCAN_INTERVAL_MINUTES`, then rerun `sudo bash bin/install-scan-timers.sh`.
+The script refreshes both timers and enables and restarts `jura-server-guard.service` when
+the panel unit is installed.
 The app-level scan lock prevents overlapping timer/manual scans.
 
 Manual cron alternative:

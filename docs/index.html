@@ -99,7 +99,7 @@ ss -lntp | grep 8765</code></pre>
 /opt/php83/bin/php artisan guard:telegram-test --message="Jura Server Guard Telegram test"
 
 # затем установите systemd-мониторы SSH-ключей, cron и процессов
-sudo bin/install-security-monitors.sh</code></pre>
+sudo bash bin/install-security-monitors.sh</code></pre>
       </section>
 
       <section id="telegram" data-title="telegram bot botfather token chat id getupdates notifications">
@@ -130,7 +130,7 @@ JURA_TELEGRAM_CHAT_ID=123456789</code></pre>
         </div>
         <p>Установка создаёт baseline без Telegram-шума по уже существующим ключам, cron-заданиям и процессам, затем включает systemd units:</p>
         <pre><code class="language-bash">cd /opt/jura-server-guard
-sudo bin/install-security-monitors.sh</code></pre>
+sudo bash bin/install-security-monitors.sh</code></pre>
         <pre><code class="language-text">jura-server-guard-ssh-keys.path      # immediate authorized_keys watch
 jura-server-guard-user-cron.timer    # every minute
 jura-server-guard-processes.timer    # every minute</code></pre>
@@ -290,11 +290,10 @@ cd /opt/jura-server-guard
 /opt/php83/bin/php artisan config:cache
 
 # install/update host-level systemd monitors: SSH keys, user cron, suspicious processes
-sudo bin/install-security-monitors.sh
+sudo bash bin/install-security-monitors.sh
 # переустановить unit-файлы, включить и перезапустить оба таймера
-sudo bin/install-scan-timers.sh
+sudo bash bin/install-scan-timers.sh
 
-systemctl restart jura-server-guard
 systemctl status jura-server-guard --no-pager -l
 systemctl status jura-server-guard-scan.timer --no-pager -l
 systemctl status jura-server-guard-logs.timer --no-pager -l
@@ -307,15 +306,24 @@ systemctl list-timers | grep jura-server-guard</code></pre>
         <div class="section-heading"><p class="kicker">Troubleshooting</p><h2>Диагностика проблем</h2></div>
         <div class="cards two">
           <article class="card"><h3>Частые причины</h3><ul><li>panel not opening — нет SSH tunnel или сервис не запущен;</li><li>port 8765 not listening — упал <code>jura-server-guard</code> или bind изменён;</li><li>scan lock stuck — предыдущий scan аварийно завершился;</li><li>SQL missing column after update — не выполнен <code>artisan migrate</code>;</li><li>timer accidentally running — timer не остановлен перед ручным обслуживанием;</li><li>host monitor alerts not delivered — не заполнены <code>JURA_TELEGRAM_*</code> или не запущены systemd units;</li><li>too many findings — запущен <code>deep</code> на большом сайте;</li><li>false positives — проверьте CMS checksums и allowlist.</li></ul></article>
-          <article class="card"><h3>Полезные команды</h3><pre><code class="language-bash">systemctl status jura-server-guard --no-pager -l
-journalctl -u jura-server-guard -n 100 --no-pager
-ss -lntp | grep 8765
+          <article class="card"><h3>Полезные команды</h3><pre><code class="language-bash">systemctl enable --now jura-server-guard.service
+systemctl status jura-server-guard.service --no-pager -l
+journalctl -u jura-server-guard.service -n 100 --no-pager
+systemctl cat jura-server-guard.service
+ss -ltnp | grep ':8765' || true
 ps aux | grep '[a]rtisan guard:scan'
 /opt/php83/bin/php artisan guard:scan-unlock --force
 /opt/php83/bin/php artisan guard:cleanup-running-scans
 systemctl status jura-server-guard-ssh-keys.path --no-pager
 journalctl -u jura-server-guard-processes.service -n 50 --no-pager</code></pre></article>
         </div>
+        <article class="card"><h3>Панель не открывается после обновления</h3><p>Ошибка SSH-туннеля <code>open failed: connect failed: Connection refused</code> означает, что SSH работает, но сервер не слушает <code>127.0.0.1:8765</code>. После проверки статуса и журнала можно отдельно проверить запуск приложения:</p><pre><code class="language-bash">cd /opt/jura-server-guard
+/opt/php83/bin/php artisan serve --host=127.0.0.1 --port=8765
+
+# Если прямой запуск успешен, остановите его через Ctrl+C:
+systemctl restart jura-server-guard.service
+systemctl status jura-server-guard.service --no-pager -l
+ss -ltnp | grep ':8765' || true</code></pre></article>
       </section>
 
       <section id="security" data-title="security recommendations ssh tunnel checksums backups evidence host monitors">
