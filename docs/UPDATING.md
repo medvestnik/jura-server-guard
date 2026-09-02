@@ -138,12 +138,12 @@ comm -23 \
 
 Refresh the systemd units, restart both timers even if they were already active, and restart
 the panel. `install-scan-timers.sh` performs `daemon-reload`, enables both timers for boot,
-and restarts them so new intervals/profile values from `.env` take effect:
+restarts them so new intervals/profile values from `.env` take effect, and then restarts
+`jura-server-guard.service` when that unit is installed:
 
 ```bash
 cd /opt/jura-server-guard
 sudo bash bin/install-scan-timers.sh
-systemctl restart jura-server-guard
 
 systemctl status jura-server-guard --no-pager -l
 systemctl status jura-server-guard-scan.timer --no-pager -l
