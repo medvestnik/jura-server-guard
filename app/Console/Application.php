@@ -7,6 +7,7 @@ use App\Modules\LogAnalyzer\LogAnalyzerService;
 use App\Modules\Notifications\AlertService;
 use App\Modules\Notifications\TelegramNotifier;
 use App\Modules\Quarantine\QuarantineService;
+use App\Modules\Quarantine\BulkFindingActionService;
 use App\Modules\Rules\RuleRepository;
 use App\Modules\Scanner\ScannerService;
 use App\Support\DB;
@@ -24,7 +25,7 @@ class Application
                 'guard:scan' => $this->scan('full', null, $argv), 'guard:scan-user' => $this->scan('user', $argv[2] ?? null, $argv), 'guard:scan-site' => $this->scan('site', $argv[2] ?? null, $argv), 'guard:logs' => $this->logs($argv),
                 'guard:backup-detect' => $this->backupDetect(), 'guard:backups:list-users' => $this->backupUsers(), 'guard:backups:list' => $this->backupList($argv), 'guard:backups:find-file' => $this->backupFind($argv), 'guard:backups:preview' => $this->backupPreview($argv), 'guard:backups:diff' => $this->backupDiff($argv), 'guard:backups:restore-file' => $this->backupRestore($argv),
                 'guard:signature-list' => $this->signatureList(), 'guard:signature-test' => $this->signatureTest((int)($argv[2] ?? 0), $argv[3] ?? ''), 'guard:signature-sweep' => $this->signatureSweep((int)($argv[2] ?? 0)), 'guard:signature-suggest' => $this->signatureSuggest((int)($argv[2] ?? 0)), 'guard:signature-enable' => $this->signatureToggle((int)($argv[2] ?? 0), true), 'guard:signature-disable' => $this->signatureToggle((int)($argv[2] ?? 0), false), 'guard:scan-active' => $this->scanActive(), 'guard:scan-unlock' => $this->scanUnlock($argv), 'guard:cleanup-running-scans' => $this->cleanupRunningScans($argv), 'guard:prune' => $this->prune($argv), 'guard:db-stats' => $this->dbStats(), 'guard:optimize-db' => $this->optimizeDb(),
-                'guard:sites' => $this->sites(), 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:status' => $this->status(),
+                'guard:sites' => $this->sites(), 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:findings-bulk-action' => $this->bulkFindingsAction((string)($argv[2] ?? '')), 'guard:status' => $this->status(),
                 'guard:ip-list' => $this->ipList(), 'guard:ip-add' => $this->ipAdd($argv), 'guard:ip-remove' => $this->ipRemove($argv), 'guard:find-hash' => $this->findHash($argv),
                 'guard:incident-import' => $this->incidentImport($argv), 'guard:incident-list' => $this->incidentList(),
                 'guard:trust-ip' => $this->trustIp($argv), 'guard:untrust-ip' => $this->untrustIp($argv), 'guard:trusted-ips' => $this->trustedIpsList(),
@@ -457,6 +458,7 @@ class Application
     private function optimizeDb(): int { if(DB::driver()==='sqlite') { DB::pdo()->exec('VACUUM'); DB::pdo()->exec('ANALYZE'); } else foreach(['admin_users','users','sites','scan_runs','file_snapshots','findings','log_events','quarantine_items','rules','allowlist_rules','settings','ai_analyses'] as $t) DB::pdo()->exec("OPTIMIZE TABLE $t"); echo "Database optimized.\n"; return 0; }
     private function quarantine(int $id): int { if(!$id) throw new \InvalidArgumentException('finding_id is required.'); $qid=(new QuarantineService())->quarantine($id); echo "Quarantined as item #$qid\n"; return 0; }
     private function restore(int $id): int { if(!$id) throw new \InvalidArgumentException('quarantine_id is required.'); (new QuarantineService())->restore($id); echo "Restored quarantine item #$id\n"; return 0; }
+    private function bulkFindingsAction(string $id): int { if($id==='') throw new \InvalidArgumentException('bulk_action_id is required.'); $state=(new BulkFindingActionService())->run($id); echo "Bulk {$state['action']} {$state['status']}: {$state['processed']}/{$state['total']}, ok={$state['ok']}, fail={$state['fail']}\n"; return $state['status']==='completed'?0:1; }
 
     private function backupDetect(): int { $d=(new IspmanagerBackupService())->detectTools(); echo "Backup root exists: ".($d['root_exists']?'yes':'no')."\nISPmanager /usr/local/mgr5: ".($d['mgr5_exists']?'yes':'no')."\nTools:\n".implode("\n", $d['tools'])."\n"; return 0; }
     private function backupUsers(): int { foreach((new IspmanagerBackupService())->users() as $u) echo $u."\n"; return 0; }

@@ -8,7 +8,7 @@
   <input class="input" name="site" placeholder="<?= e(t('Site contains')) ?>" value="<?= e($_GET['site']??'') ?>">
   <select class="input" name="type"><option value=""><?= e(t('Any type')) ?></option><?php foreach($types as $type): ?><option value="<?= e($type) ?>" <?= ($_GET['type']??'')===$type?'selected':'' ?>><?= e($type) ?></option><?php endforeach ?></select>
   <select class="input" name="risk"><option value=""><?= e(t('Any risk')) ?></option><?php foreach(['low','medium','high','critical'] as $r): ?><option value="<?= e($r) ?>" <?= ($_GET['risk']??'')===$r?'selected':'' ?>><?= e(t($r)) ?></option><?php endforeach ?></select>
-  <select class="input" name="status"><option value=""><?= e(t('Any status')) ?></option><?php foreach(['new','ignored','quarantined'] as $r): ?><option value="<?= e($r) ?>" <?= ($_GET['status']??'')===$r?'selected':'' ?>><?= e(t($r)) ?></option><?php endforeach ?></select>
+  <select class="input" name="status"><option value=""><?= e(t('Any status')) ?></option><?php foreach(['new','ignored','quarantined','deleted','restored'] as $r): ?><option value="<?= e($r) ?>" <?= ($_GET['status']??'')===$r?'selected':'' ?>><?= e(t($r)) ?></option><?php endforeach ?></select>
   <input class="input" type="date" name="date_from" value="<?= e($_GET['date_from']??'') ?>" title="<?= e(t('Date from')) ?>">
   <input class="input" type="date" name="date_to" value="<?= e($_GET['date_to']??'') ?>" title="<?= e(t('Date to')) ?>">
   <button class="btn"><?= e(t('Filter')) ?></button>
@@ -23,7 +23,7 @@ $pageUrl = static function(int $page) use ($pagination): string {
 };
 ?>
 <div class="pagination-bar">
-  <span class="pagination-summary"><?= e(t('Showing :from–:to of :total', ['from'=>$pagination['from'],'to'=>$pagination['to'],'total'=>$total])) ?></span>
+  <span class="pagination-summary"><?= e(t('Showing :from–:to of :count', ['from'=>$pagination['from'],'to'=>$pagination['to'],'count'=>$total])) ?></span>
   <form method="get" action="/findings" class="actions">
     <?php foreach(['risk','status','type','user','site','path','date_from','date_to'] as $pk): if(($_GET[$pk]??'')!==''): ?><input type="hidden" name="<?= e($pk) ?>" value="<?= e($_GET[$pk]) ?>"><?php endif; endforeach ?>
     <label><?= e(t('Records per page')) ?>
@@ -33,7 +33,16 @@ $pageUrl = static function(int $page) use ($pagination): string {
     </label>
   </form>
 </div>
-<?php if(isset($_GET['bulk_result'])): $bok=(int)($_GET['bulk_ok']??0); $bfail=(int)($_GET['bulk_fail']??0); ?><div class="notice <?= $bfail?'warning':'success' ?>"><?= e(t($_GET['bulk_result']==='delete' ? 'Deleted: :ok, failed: :fail' : 'Quarantined: :ok, failed: :fail', ['ok'=>$bok,'fail'=>$bfail])) ?></div><?php endif ?>
+<?php $bulkJobId=(string)($_GET['bulk_job']??''); if(preg_match('/^[a-f0-9]{32}$/',$bulkJobId)): ?>
+  <div class="notice info" id="bulkProgress" data-job="<?= e($bulkJobId) ?>">
+    <strong id="bulkProgressTitle"><?= e(t('Bulk action queued…')) ?></strong>
+    <div class="progress"><div id="bulkProgressBar" style="width:0%"></div></div>
+    <div id="bulkProgressCounts" class="muted"><?= e(t('Processed: :processed of :total; successful: :ok; failed: :fail', ['processed'=>0,'total'=>0,'ok'=>0,'fail'=>0])) ?></div>
+    <div id="bulkProgressPath" class="muted"></div>
+  </div>
+<?php endif ?>
+<?php if(isset($_GET['bulk_result']) && ((int)($_GET['bulk_ok']??0)+(int)($_GET['bulk_fail']??0)>0)): $bok=(int)$_GET['bulk_ok']; $bfail=(int)$_GET['bulk_fail']; ?><div class="notice <?= $bfail?'warning':'success' ?>"><?= e(t($_GET['bulk_result']==='delete' ? 'Deleted: :ok, failed: :fail' : 'Quarantined: :ok, failed: :fail', ['ok'=>$bok,'fail'=>$bfail])) ?></div><?php endif ?>
+<?php if(isset($_GET['bulk_start_error'])): ?><div class="notice danger-notice"><?= e(t('Bulk action could not be started:')) ?> <?= e($_GET['bulk_start_error']) ?></div><?php endif ?>
 <?php if(isset($_GET['quarantined'])): ?><div class="notice success"><?= e(t('File moved to quarantine.')) ?></div><?php endif ?>
 <?php if(isset($_GET['deleted'])): ?><div class="notice success"><?= e(t('File permanently deleted from the server.')) ?></div><?php endif ?>
 <?php if(isset($_GET['delete_error'])): ?><div class="notice danger-notice"><?= e(t('File could not be deleted:')) ?> <?= e($_GET['delete_error']) ?></div><?php endif ?>
@@ -104,6 +113,36 @@ function confirmBulk(e){
   var isDelete=e.submitter&&e.submitter.formAction.indexOf('bulk-delete')!==-1;
   var tpl=isDelete?<?= json_encode(t('PERMANENTLY delete :n file(s)? This cannot be undone.'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>:<?= json_encode(t('Move :n file(s) to quarantine?'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
   return confirm(tpl.replace(':n', n));
+}
+var bulkProgress=document.getElementById('bulkProgress');
+if(bulkProgress){
+  var bulkLabels={
+    delete:<?= json_encode(t('Bulk deletion'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>,
+    quarantine:<?= json_encode(t('Bulk quarantine'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>,
+    queued:<?= json_encode(t('queued'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>,
+    running:<?= json_encode(t('running'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>,
+    completed:<?= json_encode(t('completed'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>,
+    failed:<?= json_encode(t('failed'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>
+  };
+  var countTemplate=<?= json_encode(t('Processed: :processed of :total; successful: :ok; failed: :fail'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
+  function renderBulkProgress(state){
+    var total=Number(state.total||0),processed=Number(state.processed||0),ok=Number(state.ok||0),fail=Number(state.fail||0);
+    var percent=total>0?Math.min(100,Math.round(processed*100/total)):0;
+    document.getElementById('bulkProgressBar').style.width=percent+'%';
+    document.getElementById('bulkProgressTitle').textContent=(bulkLabels[state.action]||<?= json_encode(t('Bulk action'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)+' — '+(bulkLabels[state.status]||state.status||'');
+    document.getElementById('bulkProgressCounts').textContent=countTemplate.replace(':processed',processed).replace(':total',total).replace(':ok',ok).replace(':fail',fail);
+    document.getElementById('bulkProgressPath').textContent=state.current_path||state.error||'';
+    if(state.status==='completed')bulkProgress.className='notice '+(fail?'warning':'success');
+    if(state.status==='failed')bulkProgress.className='notice danger-notice';
+    return state.status==='queued'||state.status==='running';
+  }
+  function pollBulkProgress(){
+    fetch('/findings/bulk-status?id='+encodeURIComponent(bulkProgress.dataset.job),{cache:'no-store'})
+      .then(function(response){return response.json();})
+      .then(function(state){if(renderBulkProgress(state))setTimeout(pollBulkProgress,2000);})
+      .catch(function(){setTimeout(pollBulkProgress,4000);});
+  }
+  pollBulkProgress();
 }
 </script>
 <?php $content=ob_get_clean(); include base_path('resources/views/layouts/app.php'); ?>

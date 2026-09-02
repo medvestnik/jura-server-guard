@@ -2,6 +2,7 @@
 /.env
 /storage/database.sqlite
 /storage/logs/*.log
+/storage/bulk-finding-actions/*
 /storage/framework/cache/*
 /storage/framework/sessions/*
 /storage/framework/views/*
