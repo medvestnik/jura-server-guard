@@ -97,6 +97,18 @@ Panel pages:
 
 The panel UI is available in Russian, Ukrainian, and English. Default language is controlled by `JURA_DEFAULT_LOCALE` in `.env` (`ru`, `uk`, or `en`; defaults to `ru`). Each browser can switch language independently with the RU/UK/EN links in the top navigation bar; the choice is stored in a `jura_lang` cookie. Translation strings live in `resources/lang/ru.php` and `resources/lang/uk.php`; English is the built-in fallback and needs no translation file.
 
+The Findings table uses server-side pagination. Available page sizes and the default are
+configured globally in `.env`:
+
+```env
+JURA_PAGINATION_OPTIONS=20,50,100,200,500,all
+JURA_PAGINATION_DEFAULT=50
+```
+
+The special `all` option disables pagination for the current filtered result. The table
+header checkbox selects only the visible page; “Select all matching current filter” applies
+the bulk action to every matching record across all pages.
+
 ## CLI commands
 
 ```bash
@@ -545,8 +557,8 @@ The installer creates:
 File scans run every 30 minutes and log analysis every 5 minutes by default. Configure them
 with `JURA_SCAN_INTERVAL_MINUTES`, `JURA_TIMER_SCAN_PROFILE`, and
 `JURA_LOG_SCAN_INTERVAL_MINUTES`, then rerun `sudo bash bin/install-scan-timers.sh`.
-The script refreshes both timers and restarts `jura-server-guard.service` when the panel
-unit is installed.
+The script refreshes both timers and enables and restarts `jura-server-guard.service` when
+the panel unit is installed.
 The app-level scan lock prevents overlapping timer/manual scans.
 
 Manual cron alternative:

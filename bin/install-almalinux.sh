@@ -278,6 +278,8 @@ if [[ ! -f .env ]]; then cp .env.example .env; fi
 mkdir -p storage/logs storage/framework/cache storage/framework/sessions storage/framework/views bin
 configure_database_env
 append_env_value "JURA_PHP_BIN" "$PHP_BIN"
+append_env_value "JURA_PAGINATION_OPTIONS" "20,50,100,200,500,all"
+append_env_value "JURA_PAGINATION_DEFAULT" "50"
 append_env_value "JURA_WEB_ACTIONS_ENABLED" "false"
 append_env_value "JURA_FIREWALL_ACTIONS_ENABLED" "false"
 append_env_value "JURA_FIREWALL_BACKEND" "auto"

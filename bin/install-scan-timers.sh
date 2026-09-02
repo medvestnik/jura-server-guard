@@ -109,13 +109,14 @@ EOF
 
 PANEL_RESTARTED="no"
 if "$SYSTEMCTL_CMD" cat jura-server-guard.service >/dev/null 2>&1; then
+  "$SYSTEMCTL_CMD" enable jura-server-guard.service
   "$SYSTEMCTL_CMD" restart jura-server-guard.service
   PANEL_RESTARTED="yes"
 fi
 
 echo "Installed file-scan timer (${SCAN_INTERVAL}m, profile ${SCAN_PROFILE}) and log-analysis timer (${LOG_INTERVAL}m)."
 if [[ "$PANEL_RESTARTED" == "yes" ]]; then
-  echo "Restarted jura-server-guard.service."
+  echo "Enabled and restarted jura-server-guard.service."
 else
   echo "Panel service jura-server-guard.service is not installed; skipped panel restart."
 fi

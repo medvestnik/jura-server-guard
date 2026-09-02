@@ -10,7 +10,13 @@ class QuarantineService
     {
         $finding = DB::first('SELECT * FROM findings WHERE id=?', [$findingId]);
         if (!$finding) throw new RuntimeException('Finding not found.');
-        $src = $finding['path']; if (!is_file($src)) throw new RuntimeException('Original file does not exist.');
+        $src = $finding['path'];
+        $existing = DB::first("SELECT * FROM quarantine_items WHERE original_path=? AND status='quarantined' ORDER BY id DESC LIMIT 1", [$src]);
+        if ($existing && is_file($existing['quarantine_path'])) {
+            DB::statement('UPDATE findings SET status=?, updated_at=? WHERE path=? AND status<>?', ['quarantined', now(), $src, 'deleted']);
+            return (int)$existing['id'];
+        }
+        if (!is_file($src)) throw new RuntimeException('Original file does not exist.');
         $dest = rtrim(config('guard.quarantine_path'), '/') . '/' . ltrim($src, '/');
         if (!is_dir(dirname($dest))) mkdir(dirname($dest), 0700, true);
         $stat = @stat($src) ?: []; $sha = hash_file('sha256', $src); $perms = substr(sprintf('%o', fileperms($src)), -4);
@@ -20,7 +26,7 @@ class QuarantineService
         $groupCol = DB::quoteIdentifier('group');
         $originalPathHash = hash('sha256', $src);
         $id = DB::insert("INSERT INTO quarantine_items (finding_id,original_path,original_path_hash,quarantine_path,sha256,owner,$groupCol,permissions,mtime,reason,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", [$findingId,$src,$originalPathHash,$dest,$sha,$owner,$group,$perms,isset($stat['mtime'])?gmdate('Y-m-d H:i:s',$stat['mtime']):null,$reason,'quarantined',now(),now()]);
-        DB::statement('UPDATE findings SET status=?, updated_at=? WHERE id=?', ['quarantined', now(), $findingId]);
+        DB::statement('UPDATE findings SET status=?, updated_at=? WHERE path=? AND status<>?', ['quarantined', now(), $src, 'deleted']);
         return $id;
     }
     public function delete(int $findingId, string $reason = 'CLI delete'): int

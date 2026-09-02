@@ -1,6 +1,7 @@
 <?php ob_start(); $actionsEnabled=config('guard.web_actions_enabled'); ?>
 <h1><?= e(t('Findings')) ?></h1>
 <form method="get" action="/findings" class="filter-form">
+  <input type="hidden" name="per_page" value="<?= e($_GET['per_page']??config('guard.pagination_default','50')) ?>">
   <input class="input" name="path" placeholder="<?= e(t('Path contains')) ?>" value="<?= e($_GET['path']??'') ?>">
   <input class="input" name="user" list="userlist" placeholder="<?= e(t('User contains')) ?>" value="<?= e($_GET['user']??'') ?>">
   <datalist id="userlist"><?php foreach($user_names as $un): ?><option value="<?= e($un) ?>"><?php endforeach ?></datalist>
@@ -15,14 +16,30 @@
   <a class="btn" href="/findings/export.csv?<?= e(http_build_query($_GET)) ?>"><?= e(t('Export CSV')) ?></a>
   <a class="btn" href="/findings/export.json?<?= e(http_build_query($_GET)) ?>"><?= e(t('Export JSON (for AI analysis)')) ?></a>
 </form>
-<p class="muted"><?= e(t('Found: :n', ['n'=>$total])) ?></p>
+<?php
+$pageUrl = static function(int $page) use ($pagination): string {
+    $query=$_GET; $query['page']=$page; $query['per_page']=$pagination['per_page'];
+    return '/findings?'.http_build_query($query);
+};
+?>
+<div class="pagination-bar">
+  <span class="pagination-summary"><?= e(t('Showing :from–:to of :total', ['from'=>$pagination['from'],'to'=>$pagination['to'],'total'=>$total])) ?></span>
+  <form method="get" action="/findings" class="actions">
+    <?php foreach(['risk','status','type','user','site','path','date_from','date_to'] as $pk): if(($_GET[$pk]??'')!==''): ?><input type="hidden" name="<?= e($pk) ?>" value="<?= e($_GET[$pk]) ?>"><?php endif; endforeach ?>
+    <label><?= e(t('Records per page')) ?>
+      <select class="input" name="per_page" onchange="this.form.submit()">
+        <?php foreach($pagination['options'] as $option): ?><option value="<?= e($option) ?>" <?= $pagination['per_page']===$option?'selected':'' ?>><?= e($option==='all'?t('All'):$option) ?></option><?php endforeach ?>
+      </select>
+    </label>
+  </form>
+</div>
 <?php if(isset($_GET['bulk_result'])): $bok=(int)($_GET['bulk_ok']??0); $bfail=(int)($_GET['bulk_fail']??0); ?><div class="notice <?= $bfail?'warning':'success' ?>"><?= e(t($_GET['bulk_result']==='delete' ? 'Deleted: :ok, failed: :fail' : 'Quarantined: :ok, failed: :fail', ['ok'=>$bok,'fail'=>$bfail])) ?></div><?php endif ?>
 <?php if(isset($_GET['quarantined'])): ?><div class="notice success"><?= e(t('File moved to quarantine.')) ?></div><?php endif ?>
 <?php if(isset($_GET['deleted'])): ?><div class="notice success"><?= e(t('File permanently deleted from the server.')) ?></div><?php endif ?>
 <?php if(isset($_GET['delete_error'])): ?><div class="notice danger-notice"><?= e(t('File could not be deleted:')) ?> <?= e($_GET['delete_error']) ?></div><?php endif ?>
 
 <form method="post" id="bulkForm" autocomplete="off" onsubmit="return confirmBulk(event)">
-  <?php foreach(['risk','status','type','user','site','path','date_from','date_to'] as $bk): ?><input type="hidden" name="back_query[<?= e($bk) ?>]" value="<?= e($_GET[$bk] ?? '') ?>"><?php endforeach ?>
+  <?php foreach(['risk','status','type','user','site','path','date_from','date_to','page','per_page'] as $bk): ?><input type="hidden" name="back_query[<?= e($bk) ?>]" value="<?= e($_GET[$bk] ?? '') ?>"><?php endforeach ?>
   <input type="hidden" name="select_all_filtered" id="selectAllFilteredInput" value="0">
   <?php if($actionsEnabled): ?><div class="card actions">
     <?php if($total > count($findings)): ?><label><input type="checkbox" id="selectAllFilteredCheckbox"> <?= e(t('Select all :n matching current filter', ['n'=>$total])) ?></label><?php endif ?>
@@ -37,6 +54,14 @@
       <td class="actions-cell"><a class="btn small" href="/findings/<?= e($f['id']) ?>#file-content"><?= e(t('View content')) ?></a><?php if($actionsEnabled && !in_array($f['status'],['quarantined','deleted'],true)): ?> <button class="btn danger small" type="submit" formaction="/finding/quarantine" name="id" value="<?= e($f['id']) ?>" onclick="event.stopPropagation();return confirm(<?= e(json_encode(t('Move file to quarantine?'))) ?>)"><?= e(t('Quarantine')) ?></button><input type="hidden" name="return_to" value="findings"><?php endif ?><?php if($actionsEnabled && $f['status']!=='deleted'): ?> <button class="btn danger small" type="submit" formaction="/finding/delete" name="id" value="<?= e($f['id']) ?>" onclick="event.stopPropagation();return confirm(<?= e(json_encode(t('PERMANENTLY delete this file from the server? It cannot be restored.'))) ?>)"><?= e(t('Delete from server')) ?></button><?php endif ?></td>
     </tr><?php endforeach ?>
   </table>
+  <?php if($pagination['total_pages']>1): $start=max(1,$pagination['page']-2); $end=min($pagination['total_pages'],$pagination['page']+2); ?>
+    <nav class="pagination-bar pagination-pages" aria-label="<?= e(t('Pagination')) ?>">
+      <?php if($pagination['page']>1): ?><a class="btn secondary" href="<?= e($pageUrl(1)) ?>"><?= e(t('First')) ?></a><a class="btn secondary" href="<?= e($pageUrl($pagination['page']-1)) ?>"><?= e(t('Previous')) ?></a><?php endif ?>
+      <?php for($page=$start;$page<=$end;$page++): ?><a class="btn <?= $page===$pagination['page']?'current':'secondary' ?>" href="<?= e($pageUrl($page)) ?>"><?= e($page) ?></a><?php endfor ?>
+      <span class="pagination-summary"><?= e(t('Page :current of :total', ['current'=>$pagination['page'],'total'=>$pagination['total_pages']])) ?></span>
+      <?php if($pagination['page']<$pagination['total_pages']): ?><a class="btn secondary" href="<?= e($pageUrl($pagination['page']+1)) ?>"><?= e(t('Next')) ?></a><a class="btn secondary" href="<?= e($pageUrl($pagination['total_pages'])) ?>"><?= e(t('Last')) ?></a><?php endif ?>
+    </nav>
+  <?php endif ?>
 </form>
 <?php if(!$actionsEnabled): ?><p class="muted"><?= e(t('Web actions disabled. Use CLI:')) ?> <code>php artisan guard:quarantine &lt;finding_id&gt;</code></p><?php endif ?>
 <script>
@@ -75,9 +100,9 @@ function confirmBulk(e){
   if(e.submitter && (e.submitter.formAction.indexOf('/finding/quarantine')!==-1 || e.submitter.formAction.indexOf('/finding/delete')!==-1)) return true;
   var selectAll=document.getElementById('selectAllFilteredInput').value==='1';
   var n=selectAll?<?= (int)$total ?>:document.querySelectorAll('.rowcheck:checked').length;
-  if(n===0){alert(<?= e(json_encode(t('Nothing selected.'))) ?>);return false;}
+  if(n===0){alert(<?= json_encode(t('Nothing selected.'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>);return false;}
   var isDelete=e.submitter&&e.submitter.formAction.indexOf('bulk-delete')!==-1;
-  var tpl=isDelete?<?= e(json_encode(t('PERMANENTLY delete :n file(s)? This cannot be undone.'))) ?>:<?= e(json_encode(t('Move :n file(s) to quarantine?'))) ?>;
+  var tpl=isDelete?<?= json_encode(t('PERMANENTLY delete :n file(s)? This cannot be undone.'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>:<?= json_encode(t('Move :n file(s) to quarantine?'), JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
   return confirm(tpl.replace(':n', n));
 }
 </script>
