@@ -82,8 +82,17 @@ class IpBlockService
             $result = $this->run([$this->iptablesBinary($ip), '-I', 'INPUT', '1', '-s', $ip, '-j', 'DROP']);
             if ($result['code'] !== 0) throw new RuntimeException($result['output'] ?: 'Failed to add the runtime iptables rule.');
         }
-        $this->persistIptables($ip);
-        return $this->iptablesStatus($ip);
+        $persistenceError = null;
+        try {
+            $this->persistIptables($ip);
+        } catch (RuntimeException $e) {
+            // The live rule is already effective. Report persistence separately instead of
+            // making the UI claim the whole block failed and encouraging repeated clicks.
+            $persistenceError = $e->getMessage();
+        }
+        $status = $this->iptablesStatus($ip);
+        $status['persistence_error'] = $persistenceError;
+        return $status;
     }
 
     private function persistIptables(string $ip): void

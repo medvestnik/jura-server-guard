@@ -252,19 +252,24 @@ The original SHA-256, owner, group, permissions, mtime, original path, and quara
 When `JURA_WEB_ACTIONS_ENABLED=true`, the **Findings** page shows a checkbox per row plus
 "Quarantine selected" and "Delete selected" buttons, so a mass-infection incident (dozens or
 hundreds of matched webshells from one signature) can be cleaned up in one action instead of
-one file at a time. Every non-deleted row and finding detail page also has a **Delete from
-server** button for permanent single-file deletion. If more findings match the current filter
+one file at a time. Every non-deleted row and finding detail page also has a **Delete permanently
+(no quarantine copy)** button for permanent single-file deletion. If more findings match the current filter
 than are shown on the current page, a **Select all N matching current filter** checkbox applies the
 action to every matching finding server-side, not just the visible ones.
 
 **Quarantine** moves the file into the quarantine directory as before (reversible via
-**Restore**). **Delete** is new and permanent: the file is captured into `quarantine_items`
+**Restore**). **Delete permanently (no quarantine copy)** is permanent: the file is captured into `quarantine_items`
 (SHA-256, owner, permissions, path, reason) for the audit trail exactly like quarantine, then
 immediately removed from disk with no way to restore it — the finding and quarantine item are
-both marked `deleted`. If the finding was already quarantined, **Delete from server** removes
+both marked `deleted`. If the finding was already quarantined, **Delete permanently** removes
 its quarantine copy instead. Both actions require an explicit confirmation dialog showing how many
 files will be affected, and both are always disabled unless `JURA_WEB_ACTIONS_ENABLED=true`
 (same gate as the existing single-file quarantine action).
+
+Zero-byte files are never used to create or match automatic SHA-256 signatures. The empty-file
+hash is identical for every empty file, so treating it as malware would turn one cache placeholder
+into false positives across unrelated sites. `artisan migrate` disables previously auto-created
+empty-file signatures and marks their still-new findings as ignored.
 
 Bulk actions run in a background PHP process. The Findings page displays the action type,
 processed/total count, successful and failed counts, current path, and a progress bar updated
@@ -384,6 +389,15 @@ insertion. Trusted IPs and private, loopback, link-local, or reserved ranges are
 reduce the chance of locking out legitimate management access. The panel process needs the
 permissions required to manage the selected firewall backend and persistent rules file.
 
+This is a **network-layer block for direct traffic**. If a site is behind Cloudflare or another
+reverse proxy, the TCP connection reaching this server comes from the proxy address, while the
+original visitor IP is restored only inside Nginx/Apache and written to the access log. An
+`INPUT -s visitor-IP -j DROP` rule therefore cannot stop that proxied request. Jura labels this
+state as “Direct traffic blocked” and highlights any later log event as “Request after block”;
+the visitor must additionally be blocked at Cloudflare (for example with a WAF/custom rule) or
+at the web-server layer. Do not block Cloudflare edge ranges merely because they delivered the
+request.
+
 CLI equivalents:
 
 ```bash
@@ -422,31 +436,39 @@ only writes to the DB `settings` table for the MVP and is not authoritative — 
 JURA_TELEGRAM_ENABLED=true
 JURA_TELEGRAM_BOT_TOKEN=123456:AA...        # from @BotFather
 JURA_TELEGRAM_CHAT_ID=123456789             # message your bot, then check https://api.telegram.org/bot<token>/getUpdates
+JURA_TELEGRAM_FINDING_EXAMPLES=8            # paths shown in each per-site summary (1-15)
 JURA_NOTIFY_NEW_CRITICAL_HIGH_FINDINGS=true
 JURA_NOTIFY_UNTRUSTED_WEBROOT_FILES=true
 JURA_NOTIFY_CRON_CHANGES=true
 JURA_CRON_MONITOR_ENABLED=true
 ```
 
-After every non-dry-run scan, Jura checks for and sends one Telegram message per:
+During every non-dry-run scan, Jura sends compact notifications:
 
-* a **new** `critical`/`high` finding (a signature match, a webshell indicator, etc.) —
-  this already covers "a file matching a known signature";
-* a **new file created at a site's web root** (top-level, not inside a subdirectory) whose
-  most recent matching access-log IP is not in Trusted IPs;
+* after each site is scanned, one summary of all its **new** `critical`/`high` findings
+  (signature matches, webshell indicators, etc.); the summary contains totals and a limited
+  number of example paths instead of one Telegram message per file;
+* one per-site summary of **new files created at a site's web root** (top-level, not inside a
+  subdirectory) whose most recent matching access-log IP is not in Trusted IPs;
 * a **new crontab entry** for any inventoried server user, checked every scan when
   `JURA_CRON_MONITOR_ENABLED=true` (read-only `crontab -l -u <user>`; nothing is ever
   written to any user's crontab).
 
-Each attempt (sent or failed, e.g. a wrong bot token) is logged in `notifications_log` and
-never repeated for the same finding/file/cron line. Test your configuration with:
+Each attempt (sent or failed, e.g. a wrong bot token or Telegram HTTP 429 rate limit) is logged
+in `notifications_log` and shown on the Settings page. Successful finding/file notifications
+are not repeated; failed summaries remain eligible for retry. Test or retry with:
 
 ```bash
 php artisan guard:telegram-test --message="hello from Jura"
+php artisan guard:telegram-findings 57
 php artisan guard:trust-ip 1.2.3.4 --label="office VPN"
 php artisan guard:trusted-ips
 php artisan guard:cron-scan
 ```
+
+`guard:telegram-findings` accepts a scan-run ID and processes unsent/failed grouped summaries;
+without an ID it uses the latest completed scan. Telegram's `retry_after` response is honored
+once (up to 15 seconds), while grouping prevents the message flood that normally causes HTTP 429.
 
 Note on timing: Jura detects changes on its normal scan cadence (every 30 minutes by
 default via the systemd timer), not via real-time filesystem watching — "immediately" in

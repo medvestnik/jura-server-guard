@@ -34,7 +34,9 @@ class SignatureEngine
         $type = $sig['pattern_type'] ?? 'substring';
         $ok = match ($type) {
             'regex' => $this->matchRegex((string)($pattern['regex'] ?? $sig['pattern'] ?? ''), $content, $matched),
-            'hash' => in_array(strtolower((string)($meta['sha256'] ?? '')), array_map('strtolower', (array)($pattern['sha256'] ?? [])), true),
+            'hash' => (int)($meta['size'] ?? 0) > 0
+                && strtolower((string)($meta['sha256'] ?? '')) !== hash('sha256', '')
+                && in_array(strtolower((string)($meta['sha256'] ?? '')), array_map('strtolower', (array)($pattern['sha256'] ?? [])), true),
             'structural' => $this->matchStructural($pattern, $path, $relative, $content, $matched),
             'combo' => $this->matchCombo($pattern, $content, $path.' '.$relative, $matched),
             default => $this->matchSubstring((array)($pattern['any'] ?? $pattern['substring'] ?? []), $content, $matched, (bool)($pattern['case_insensitive'] ?? true)),

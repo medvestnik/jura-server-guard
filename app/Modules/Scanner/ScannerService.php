@@ -63,12 +63,17 @@ class ScannerService
         try {
             $GLOBALS['__guard_scan_run_id'] = $runId;
             $inv = new InventoryService();
+            $alerts = new AlertService();
             $sites = match ($scopeType) { 'user' => $inv->refresh($scopeValue, null, $options), 'site' => $inv->refresh(null, $scopeValue, $options), default => $inv->refresh(null, null, $options) };
             $this->progress($options, sprintf('Scan #%d [%s/%s]: %d site(s) selected for %s%s', $runId, $this->profile($options), $scanMode, count($sites), $scopeType, $scopeValue ? ': '.$scopeValue : ''));
             foreach ($sites as $site) {
                 if ($this->deadlineReached($options)) { $this->limitReached = true; break; }
                 [$f, $c] = $this->scanSite($site, $runId, $options, $files, $findings); $files += $f; $findings += $c;
                 DB::statement('UPDATE sites SET last_scan_at=?, updated_at=? WHERE id=?', [now(), now(), $site['id']]);
+                if (empty($options['dry_run'])) {
+                    try { $alerts->notifyNewFindings($runId, (int)$site['id']); }
+                    catch (Throwable $e) { $this->progress($options, 'Telegram finding alert failed: '.$e->getMessage()); }
+                }
                 if ($this->limitReached) break;
             }
             if ($this->shouldRunLogAnalysis($options) && !$this->deadlineReached($options) && !$this->limitReached) {
@@ -92,8 +97,8 @@ class ScannerService
             $this->progress($options, "Scan #$runId $status: files=$files findings=$findings skipped_media={$this->skippedMedia} skipped_directories={$this->skippedDirectories} files_seen_total={$this->diffStats['files_seen_total']} files_new={$this->diffStats['files_new']} files_modified={$this->diffStats['files_modified']} files_deleted={$this->diffStats['files_deleted']} files_analyzed={$this->diffStats['files_analyzed']} files_skipped_unchanged={$this->diffStats['files_skipped_unchanged']} scan_mode=$scanMode noisy_signatures=".json_encode($this->noisySignatures, JSON_UNESCAPED_SLASHES));
             if (empty($options['dry_run'])) {
                 try {
-                    (new AlertService())->runPostScanChecks($runId);
-                    if (config('guard.cron_monitor_enabled')) (new AlertService())->runCronCheck();
+                    $alerts->runPostScanChecks($runId);
+                    if (config('guard.cron_monitor_enabled')) $alerts->runCronCheck();
                 } catch (Throwable $e) {
                     $this->progress($options, 'Alert/cron check failed: ' . $e->getMessage());
                 }
@@ -744,7 +749,7 @@ class ScannerService
         if (($f['risk'] ?? '') !== 'critical') return;
         if ($alreadyFromSignature) return; // already matched a known signature; nothing new to learn
         $sha = $m['sha256'] ?? null;
-        if (!$sha) return;
+        if (!$sha || (int)($m['size'] ?? 0) === 0 || strtolower((string)$sha) === hash('sha256', '')) return;
         $slug = 'auto-' . substr($sha, 0, 16);
         if (DB::first('SELECT id FROM malware_signatures WHERE slug=?', [$slug])) return;
         DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,enabled,source,source_finding_id,source_file_sha256,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?)', [

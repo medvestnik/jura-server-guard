@@ -356,7 +356,7 @@ if ($path === '/threat-ips/save' && $method === 'POST') {
     }
     redirect('/threat-ips?ip='.urlencode($ip).'&saved=1');
 }
-if ($path === '/threat-ips/delete' && $method === 'POST') { $id=(int)$_POST['id']; $row=DB::first('SELECT firewall_status FROM threat_ips WHERE id=?',[$id]); if(($row['firewall_status']??'')!=='blocked'){ DB::statement('DELETE FROM threat_ip_evidence WHERE threat_ip_id=?',[$id]); DB::statement('DELETE FROM threat_ips WHERE id=?',[$id]); } redirect('/threat-ips'); }
+if ($path === '/threat-ips/delete' && $method === 'POST') { $id=(int)$_POST['id']; $row=DB::first('SELECT firewall_status FROM threat_ips WHERE id=?',[$id]); if(!in_array(($row['firewall_status']??''),['blocked','network_blocked'],true)){ DB::statement('DELETE FROM threat_ip_evidence WHERE threat_ip_id=?',[$id]); DB::statement('DELETE FROM threat_ips WHERE id=?',[$id]); } redirect('/threat-ips'); }
 if ($path === '/threat-ips/block' && $method === 'POST') {
     $ip = trim((string)($_POST['ip'] ?? ''));
     $existing = DB::first('SELECT id FROM threat_ips WHERE ip=?', [$ip]);
@@ -377,14 +377,22 @@ if ($path === '/threat-ips/block' && $method === 'POST') {
     if ($existing && config('guard.firewall_actions_enabled')) {
         try {
             $svc = new IpBlockService(); $before = $svc->status($ip); $after = $svc->block($ip); $backend = (string)($after['backend'] ?? $before['backend'] ?? '');
-            $result = $before['blocked'] ? 'already_blocked' : 'blocked'; $message = '';
-            DB::statement('UPDATE threat_ips SET firewall_status=?,firewall_error=NULL,blocked_at=COALESCE(blocked_at,?),updated_at=? WHERE id=?', ['blocked',now(),now(),$existing['id']]);
+            if (empty($after['runtime'])) throw new RuntimeException('The firewall rule was not found in the active runtime configuration after the block command.');
+            $result = !empty($before['runtime']) ? 'already_blocked' : 'network_blocked';
+            $message = (string)($after['persistence_error'] ?? '');
+            DB::statement('UPDATE threat_ips SET firewall_status=?,firewall_error=?,blocked_at=COALESCE(blocked_at,?),updated_at=? WHERE id=?', ['network_blocked',$message!==''?$message:null,now(),now(),$existing['id']]);
         } catch (Throwable $e) {
             $message = $e->getMessage();
             DB::statement('UPDATE threat_ips SET firewall_status=?,firewall_error=?,updated_at=? WHERE id=?', ['failed',$message,now(),$existing['id']]);
         }
     }
-    redirect('/threat-ips?'.http_build_query(['ip'=>$ip,'block_result'=>$result,'block_message'=>$message,'block_backend'=>$backend]));
+    $resultQuery = http_build_query(['ip'=>$ip,'block_result'=>$result,'block_message'=>$message,'block_backend'=>$backend]);
+    $returnTo = (string)($_POST['return_to'] ?? '');
+    if ($returnTo !== '' && parse_url($returnTo, PHP_URL_PATH) === '/logs' && parse_url($returnTo, PHP_URL_HOST) === null) {
+        $returnTo = strtok($returnTo, '#');
+        redirect($returnTo.(str_contains($returnTo,'?')?'&':'?').$resultQuery.'#log-'.(int)($_POST['log_event_id']??0));
+    }
+    redirect('/threat-ips?'.$resultQuery);
 }
 if ($path === '/threat-ips/abuse-report') {
     $ip = trim((string) ($_GET['ip'] ?? ''));
@@ -583,11 +591,11 @@ if ($path === '/search') {
 }
 $data = match ($path) {
  '/scan/active' => ['scan.active', ['ctx'=>scan_active_context()]],
- '/' => ['dashboard.index', ['activeScan'=>scan_active_context()['run'],'activeLock'=>scan_active_context()['lock'],'last'=>DB::first('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1'),'users'=>DB::first('SELECT COUNT(*) c FROM users')['c']??0,'sites'=>DB::first('SELECT COUNT(*) c FROM sites')['c']??0,'new'=>DB::first("SELECT COUNT(*) c FROM findings WHERE status='new'")['c']??0,'crit'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='critical' AND status='new'")['c']??0,'high'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='high' AND status='new'")['c']??0,'q'=>DB::first("SELECT COUNT(*) c FROM quarantine_items WHERE status='quarantined'")['c']??0,'logs'=>DB::select('SELECT l.*, s.name site_name, s.path site_path FROM log_events l LEFT JOIN sites s ON s.id=l.site_id ORDER BY l.created_at DESC, l.id DESC LIMIT 10'),'threatIps'=>(function(){ $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return $ips; })(),'scanRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]],
+ '/' => ['dashboard.index', ['activeScan'=>scan_active_context()['run'],'activeLock'=>scan_active_context()['lock'],'last'=>DB::first('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1'),'users'=>DB::first('SELECT COUNT(*) c FROM users')['c']??0,'sites'=>DB::first('SELECT COUNT(*) c FROM sites')['c']??0,'new'=>DB::first("SELECT COUNT(*) c FROM findings WHERE status='new'")['c']??0,'crit'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='critical' AND status='new'")['c']??0,'high'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='high' AND status='new'")['c']??0,'q'=>DB::first("SELECT COUNT(*) c FROM quarantine_items WHERE status='quarantined'")['c']??0,'logs'=>DB::select('SELECT l.*, s.name site_name, s.path site_path FROM log_events l LEFT JOIN sites s ON s.id=l.site_id ORDER BY l.created_at DESC, l.id DESC LIMIT 10'),'threatIps'=>(function(){ $ips=[]; foreach(DB::select('SELECT ip,classification,risk,firewall_status,firewall_error,blocked_at FROM threat_ips') as $r) $ips[$r['ip']]=$r; return $ips; })(),'scanRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]],
  '/users' => ['users.index',['scanCtx'=>scan_active_context(),'users'=>DB::select('SELECT u.*, COUNT(DISTINCT s.id) sites_count, COUNT(f.id) findings_count, MAX(s.last_scan_at) last_scan_at FROM users u LEFT JOIN sites s ON s.server_user_id=u.id LEFT JOIN findings f ON f.site_id=s.id GROUP BY u.id ORDER BY u.name')]],
  '/sites' => ['sites.index',['scanCtx'=>scan_active_context(),'sites'=>DB::select('SELECT s.*, u.name user_name, COUNT(f.id) findings_count, MAX(CASE f.risk WHEN "critical" THEN 4 WHEN "high" THEN 3 WHEN "medium" THEN 2 ELSE 1 END) risk_score FROM sites s LEFT JOIN users u ON u.id=s.server_user_id LEFT JOIN findings f ON f.site_id=s.id AND f.status="new" GROUP BY s.id ORDER BY s.path')]],
  '/findings' => ['findings.index',(function(){ [$w,$p]=finding_filters(); $total=(int)(DB::first('SELECT COUNT(*) c FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w, $p)['c'] ?? 0); $pagination=findings_pagination($total); return ['findings'=>DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY CASE risk WHEN "critical" THEN 1 WHEN "high" THEN 2 WHEN "medium" THEN 3 ELSE 4 END, f.id DESC'.$pagination['sql'],$p), 'total'=>$total, 'pagination'=>$pagination, 'user_names'=>array_column(DB::select('SELECT DISTINCT name FROM users ORDER BY name'), 'name'), 'types'=>array_column(DB::select('SELECT DISTINCT type FROM findings WHERE type IS NOT NULL AND type<>? ORDER BY type', ['']), 'type')]; })()],
- '/logs' => ['logs.index',(function(){ [$w,$p]=log_filters(); $total=(int)(DB::first('SELECT COUNT(*) c FROM log_events l LEFT JOIN sites s ON s.id=l.site_id '.$w,$p)['c']??0); $pagination=table_pagination($total); $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return ['events'=>DB::select('SELECT l.*, s.name site_name, s.path site_path, u.name user_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY l.created_at DESC, l.id DESC'.$pagination['sql'],$p),'threatIps'=>$ips,'total'=>$total,'pagination'=>$pagination]; })()],
+ '/logs' => ['logs.index',(function(){ [$w,$p]=log_filters(); $total=(int)(DB::first('SELECT COUNT(*) c FROM log_events l LEFT JOIN sites s ON s.id=l.site_id '.$w,$p)['c']??0); $pagination=table_pagination($total); $ips=[]; foreach(DB::select('SELECT ip,classification,risk,firewall_status,firewall_error,blocked_at FROM threat_ips') as $r) $ips[$r['ip']]=$r; return ['events'=>DB::select('SELECT l.*, s.name site_name, s.path site_path, u.name user_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY l.created_at DESC, l.id DESC'.$pagination['sql'],$p),'threatIps'=>$ips,'total'=>$total,'pagination'=>$pagination]; })()],
  '/file-changes' => ['file-changes.index',(function(){ [$w,$p]=file_change_filters(); return ['changes'=>DB::select('SELECT fs.*, s.name site_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id '.$w.' ORDER BY COALESCE(fs.last_changed_at,fs.first_seen_at,fs.updated_at) DESC LIMIT 1000',$p), 'lastRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]; })()],
  '/quarantine' => ['quarantine.index',['items'=>DB::select('SELECT * FROM quarantine_items ORDER BY id DESC')]],
  '/signatures' => ['signatures.index',(function(){ [$w,$p]=signature_filters(); return ['signatures'=>DB::select('SELECT * FROM malware_signatures '.$w.' ORDER BY enabled DESC,risk DESC,name',$p)]; })()],
@@ -596,7 +604,7 @@ $data = match ($path) {
  '/trusted-ips' => ['trusted_ips.index',['ips'=>DB::select('SELECT * FROM trusted_ips ORDER BY updated_at DESC')]],
  '/incidents' => ['incidents.index',['incidents'=>DB::select("SELECT i.*, (SELECT COUNT(*) FROM incident_threat_ip_links l WHERE l.incident_id=i.id) threat_ips_count, (SELECT COUNT(*) FROM incident_signature_links l WHERE l.incident_id=i.id) signatures_count, (SELECT COUNT(*) FROM incident_file_ioc_links l WHERE l.incident_id=i.id) file_iocs_count FROM incidents i ORDER BY i.imported_at DESC")]],
  '/incidents/import' => ['incidents.import',['result'=>null,'error'=>null]],
- '/settings' => ['settings.index',['settings'=>DB::select('SELECT * FROM settings ORDER BY '.DB::quoteIdentifier('key')),'telegramTestResult'=>(function(){ $r=$_SESSION['telegram_test_result']??null; unset($_SESSION['telegram_test_result']); return $r; })()]],
+ '/settings' => ['settings.index',['settings'=>DB::select('SELECT * FROM settings ORDER BY '.DB::quoteIdentifier('key')),'notificationLog'=>DB::select('SELECT * FROM notifications_log ORDER BY id DESC LIMIT 20'),'telegramTestResult'=>(function(){ $r=$_SESSION['telegram_test_result']??null; unset($_SESSION['telegram_test_result']); return $r; })()]],
  '/backups' => ['backups.index',(function(){ $svc=new IspmanagerBackupService(); $path=$_GET['path']??''; $date=$_GET['date']??''; return ['service'=>$svc,'detect'=>$svc->detectTools(),'users'=>$svc->users(),'backups'=>$svc->backups($_GET['user']??null),'found'=>$path?$svc->findFile($path,$date?:null):[],'searchPath'=>$path,'date'=>$date,'preview'=>($path&&$date)?$svc->preview($path,$date):null,'diff'=>($path&&$date)?$svc->diff($path,$date):null]; })()],
  default => ['dashboard.404', []],
 };
