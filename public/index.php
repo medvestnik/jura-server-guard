@@ -105,7 +105,7 @@ function resolve_bulk_finding_ids(): array {
     return array_values(array_unique(array_filter(array_map('intval', (array)($_POST['ids'] ?? [])))));
 }
 
-function findings_pagination(int $total): array {
+function table_pagination(int $total): array {
     $options=[];
     foreach ((array)config('guard.pagination_options', ['20','50','100','200','500','all']) as $value) {
         $value=strtolower(trim((string)$value));
@@ -126,6 +126,8 @@ function findings_pagination(int $total): array {
     $offset=($page-1)*$size;
     return ['options'=>$options,'per_page'=>$perPage,'page'=>$page,'total_pages'=>$totalPages,'from'=>$total?($offset+1):0,'to'=>min($total,$offset+$size),'sql'=>' LIMIT '.$size.' OFFSET '.$offset];
 }
+
+function findings_pagination(int $total): array { return table_pagination($total); }
 
 function file_change_filters(): array {
     $where=[]; $params=[]; $kind=$_GET['kind']??'';
@@ -190,7 +192,7 @@ function log_filters(): array {
     if ((int)($_GET['event_id']??0) > 0) { $where[]='l.id=?'; $params[]=(int)$_GET['event_id']; }
     foreach (['risk'=>'l.risk','type'=>'l.event_type','ip'=>'l.ip'] as $key=>$col) if (($_GET[$key]??'')!=='') { $where[]="$col=?"; $params[]=$_GET[$key]; }
     if (($_GET['uri']??'')!=='') { $where[]='l.uri LIKE ?'; $params[]='%'.$_GET['uri'].'%'; }
-    if (($_GET['site']??'')!=='') { $where[]='s.name=?'; $params[]=$_GET['site']; }
+    if (($_GET['site']??'')!=='') { $where[]='s.name LIKE ?'; $params[]='%'.trim((string)$_GET['site']).'%'; }
     if (($_GET['date_from']??'')!=='') { $where[]='l.created_at >= ?'; $params[]=$_GET['date_from'].' 00:00:00'; }
     if (($_GET['date_to']??'')!=='') { $where[]='l.created_at <= ?'; $params[]=$_GET['date_to'].' 23:59:59'; }
     return [$where ? 'WHERE '.implode(' AND ', $where) : '', $params];
@@ -198,13 +200,81 @@ function log_filters(): array {
 
 function log_event_with_site(int $eventId, string $ip): ?array
 {
-    $event = DB::first('SELECT l.*,s.name site_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id WHERE l.id=? AND l.ip=?', [$eventId,$ip]);
+    $event = DB::first('SELECT l.*,s.name site_name,s.path site_path FROM log_events l LEFT JOIN sites s ON s.id=l.site_id WHERE l.id=? AND l.ip=?', [$eventId,$ip]);
     if (!$event || !empty($event['site_name'])) return $event;
     $logPath = strtolower((string)($event['log_path'] ?? ''));
-    foreach (DB::select('SELECT id,name FROM sites ORDER BY LENGTH(name) DESC') as $site) {
-        if ($site['name'] !== '' && str_contains($logPath, strtolower((string)$site['name']))) { $event['site_id']=$site['id']; $event['site_name']=$site['name']; break; }
+    foreach (DB::select('SELECT id,name,path FROM sites ORDER BY LENGTH(name) DESC') as $site) {
+        if ($site['name'] !== '' && str_contains($logPath, strtolower((string)$site['name']))) { $event['site_id']=$site['id']; $event['site_name']=$site['name']; $event['site_path']=$site['path']; break; }
     }
     return $event;
+}
+
+function log_event_by_id(int $eventId): ?array
+{
+    $event = DB::first('SELECT l.*,s.name site_name,s.path site_path,u.name user_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id WHERE l.id=?', [$eventId]);
+    if (!$event || !empty($event['site_name'])) return $event;
+    $logPath = strtolower((string)($event['log_path'] ?? ''));
+    foreach (DB::select('SELECT s.id,s.name,s.path,u.name user_name FROM sites s LEFT JOIN users u ON u.id=s.server_user_id ORDER BY LENGTH(s.name) DESC') as $site) {
+        if ($site['name'] !== '' && str_contains($logPath, strtolower((string)$site['name']))) {
+            $event['site_id']=$site['id']; $event['site_name']=$site['name']; $event['site_path']=$site['path']; $event['user_name']=$site['user_name'];
+            break;
+        }
+    }
+    return $event;
+}
+
+function log_event_site_label(array $event): string
+{
+    if (trim((string)($event['site_name'] ?? '')) !== '') return (string)$event['site_name'];
+    $filename = basename((string)($event['log_path'] ?? ''));
+    return preg_replace('/\.(access|error)\.log(?:\.\d+|-[0-9]+)?$/i', '', $filename) ?: $filename;
+}
+
+function log_uri_looks_like_file(?string $uri): bool
+{
+    $uriPath = parse_url((string)$uri, PHP_URL_PATH);
+    if (!is_string($uriPath) || $uriPath === '' || str_ends_with($uriPath, '/')) return false;
+    return str_contains(basename($uriPath), '.');
+}
+
+function log_event_file_context(?array $event): array
+{
+    $result = ['path'=>null,'exists'=>false,'finding'=>null,'error'=>'The log event does not map to a safe file path.'];
+    if (!$event || empty($event['site_path'])) return $result;
+    $uriPath = parse_url((string)($event['uri'] ?? ''), PHP_URL_PATH);
+    if (!is_string($uriPath) || $uriPath === '' || str_ends_with($uriPath, '/')) return $result;
+    $decoded = rawurldecode($uriPath);
+    if (str_contains($decoded, "\0") || str_contains($decoded, '\\')) return $result;
+    $segments = array_values(array_filter(explode('/', $decoded), static fn($segment) => $segment !== '' && $segment !== '.'));
+    if (!$segments || in_array('..', $segments, true)) return $result;
+    $root = realpath((string)$event['site_path']);
+    if ($root === false || !is_dir($root)) { $result['error']='The site root is unavailable on the server.'; return $result; }
+    $candidate = $root.'/'.implode('/', $segments);
+    $pathHash = hash('sha256', $candidate);
+    $finding = DB::first("SELECT * FROM findings WHERE path_hash=? OR path=? ORDER BY CASE status WHEN 'deleted' THEN 2 ELSE 1 END, id DESC LIMIT 1", [$pathHash,$candidate]);
+    $result['path']=$candidate; $result['finding']=$finding; $result['error']=null;
+    $resolved = realpath($candidate);
+    if ($resolved === false || !is_file($resolved)) return $result;
+    if ($resolved !== $root && !str_starts_with($resolved, $root.'/')) { $result['path']=null; $result['finding']=null; $result['error']='Resolved file is outside the site root.'; return $result; }
+    $result['path']=$resolved; $result['exists']=true;
+    if (!$finding && $resolved !== $candidate) $result['finding']=DB::first("SELECT * FROM findings WHERE path_hash=? OR path=? ORDER BY CASE status WHEN 'deleted' THEN 2 ELSE 1 END, id DESC LIMIT 1", [hash('sha256',$resolved),$resolved]);
+    return $result;
+}
+
+function ensure_log_event_file_finding(array $event, array $context): int
+{
+    if (empty($context['exists']) || empty($context['path']) || !is_file($context['path'])) throw new RuntimeException('The requested file does not exist inside the site root.');
+    $path=(string)$context['path']; $pathHash=hash('sha256',$path);
+    $existing=DB::first("SELECT id FROM findings WHERE (path_hash=? OR path=?) AND status<>'deleted' ORDER BY id DESC LIMIT 1", [$pathHash,$path]);
+    if ($existing) return (int)$existing['id'];
+    $stat=@stat($path) ?: []; $sha=@hash_file('sha256',$path) ?: null;
+    $owner=function_exists('posix_getpwuid') ? (posix_getpwuid($stat['uid']??0)['name']??(string)($stat['uid']??'')) : null;
+    $permissions=@fileperms($path); $permissions=$permissions===false?null:substr(sprintf('%o',$permissions),-4);
+    $fingerprint=hash('sha256','log-event|'.(int)$event['id'].'|'.$path);
+    $findingHash=hash('sha256',$path.'|log_requested_file|log-requested-file|'.$fingerprint);
+    return (int)DB::insert('INSERT INTO findings (site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
+        $event['site_id']??null,$path,$pathHash,$findingHash,$event['risk']??'high','new','log_requested_file','log-requested-file',$fingerprint,'File requested in suspicious log event','Created from suspicious log event #'.(int)$event['id'].' for safe inspection and response.','[]',json_encode([(int)$event['id']]),$sha,$stat['size']??null,isset($stat['mtime'])?gmdate('Y-m-d H:i:s',$stat['mtime']):null,$owner,$permissions,now(),now(),now(),now()
+    ]);
 }
 
 function save_threat_ip_evidence(int $threatIpId, int $eventId, string $ip): bool
@@ -216,6 +286,29 @@ function save_threat_ip_evidence(int $threatIpId, int $eventId, string $ip): boo
     DB::insert('INSERT INTO threat_ip_evidence (threat_ip_id,log_event_id,site_id,site_name,request_uri,file_path,detected_at,created_at) VALUES (?,?,?,?,?,?,?,?)', [$threatIpId,$eventId,$event['site_id'],$event['site_name'],$event['uri'],$requestPath,$event['created_at'],now()]);
     DB::statement('UPDATE threat_ips SET hit_count=hit_count+1 WHERE id=?', [$threatIpId]);
     return true;
+}
+
+if ($path === '/logs/file') {
+    $event=log_event_by_id((int)($_GET['event_id']??0));
+    $fileContext=log_event_file_context($event);
+    $preview=['content'=>'','source'=>null,'error'=>$fileContext['error']??'File not found.'];
+    if (!empty($fileContext['finding'])) $preview=safe_finding_preview($fileContext['finding']);
+    elseif (!empty($fileContext['exists'])) $preview=safe_finding_preview(['id'=>0,'path'=>$fileContext['path']]);
+    echo view('logs.file',['event'=>$event,'fileContext'=>$fileContext,'filePreview'=>$preview]);
+    exit;
+}
+if (in_array($path, ['/logs/file/quarantine','/logs/file/delete'], true) && $method==='POST' && config('guard.web_actions_enabled')) {
+    $eventId=(int)($_POST['event_id']??0); $event=log_event_by_id($eventId); $fileContext=log_event_file_context($event);
+    $action=$path==='/logs/file/delete'?'delete':'quarantine';
+    try {
+        if (!$event) throw new RuntimeException('Log event not found.');
+        $findingId=ensure_log_event_file_finding($event,$fileContext);
+        if ($action==='delete') (new QuarantineService())->delete($findingId,'Permanent deletion from suspicious log event #'.$eventId);
+        else (new QuarantineService())->quarantine($findingId,'Quarantine from suspicious log event #'.$eventId);
+        redirect('/logs/file?'.http_build_query(['event_id'=>$eventId,$action=>1]));
+    } catch (Throwable $e) {
+        redirect('/logs/file?'.http_build_query(['event_id'=>$eventId,'action_error'=>$e->getMessage()]));
+    }
 }
 
 if ($path === '/finding/ignore' && $method==='POST') { DB::statement('UPDATE findings SET status=?, updated_at=? WHERE id=?', ['ignored', now(), (int)$_POST['id']]); redirect('/findings/'.(int)$_POST['id']); }
@@ -362,7 +455,7 @@ if ($path === '/findings/export.json') {
     }, $rows);
     send_json('findings-export.json', ['format' => 'jura-server-guard-findings-export', 'format_version' => '1.0', 'generated_at' => gmdate('c'), 'hostname' => @gethostname() ?: null, 'filters' => array_filter($_GET), 'count' => count($findings), 'findings' => $findings]);
 }
-if ($path === '/logs/export.csv') { [$w,$p]=log_filters(); send_csv('log_events.csv', DB::select("SELECT l.id,l.risk,l.event_type,u.name user_name,s.name site_name,l.ip,l.method,l.uri,l.status_code,l.user_agent,l.referer,l.created_at FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY l.id DESC LIMIT 50000", $p)); }
+if ($path === '/logs/export.csv') { [$w,$p]=log_filters(); send_csv('log_events.csv', DB::select("SELECT l.id,l.risk,l.event_type,u.name user_name,s.name site_name,l.log_path,l.line_number,l.ip,l.method,l.uri,l.status_code,l.user_agent,l.referer,l.created_at FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY l.created_at DESC,l.id DESC LIMIT 50000", $p)); }
 if ($path === '/signatures/create') { echo view('signatures.form',['signature'=>null]); exit; }
 if ($path === '/signatures/create-from-hash') {
     $sha = strtolower(trim((string)($_GET['sha256'] ?? '')));
@@ -490,11 +583,11 @@ if ($path === '/search') {
 }
 $data = match ($path) {
  '/scan/active' => ['scan.active', ['ctx'=>scan_active_context()]],
- '/' => ['dashboard.index', ['activeScan'=>scan_active_context()['run'],'activeLock'=>scan_active_context()['lock'],'last'=>DB::first('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1'),'users'=>DB::first('SELECT COUNT(*) c FROM users')['c']??0,'sites'=>DB::first('SELECT COUNT(*) c FROM sites')['c']??0,'new'=>DB::first("SELECT COUNT(*) c FROM findings WHERE status='new'")['c']??0,'crit'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='critical' AND status='new'")['c']??0,'high'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='high' AND status='new'")['c']??0,'q'=>DB::first("SELECT COUNT(*) c FROM quarantine_items WHERE status='quarantined'")['c']??0,'logs'=>DB::select('SELECT l.*, s.name site_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id ORDER BY l.created_at DESC, l.id DESC LIMIT 10'),'threatIps'=>(function(){ $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return $ips; })(),'scanRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]],
+ '/' => ['dashboard.index', ['activeScan'=>scan_active_context()['run'],'activeLock'=>scan_active_context()['lock'],'last'=>DB::first('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1'),'users'=>DB::first('SELECT COUNT(*) c FROM users')['c']??0,'sites'=>DB::first('SELECT COUNT(*) c FROM sites')['c']??0,'new'=>DB::first("SELECT COUNT(*) c FROM findings WHERE status='new'")['c']??0,'crit'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='critical' AND status='new'")['c']??0,'high'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='high' AND status='new'")['c']??0,'q'=>DB::first("SELECT COUNT(*) c FROM quarantine_items WHERE status='quarantined'")['c']??0,'logs'=>DB::select('SELECT l.*, s.name site_name, s.path site_path FROM log_events l LEFT JOIN sites s ON s.id=l.site_id ORDER BY l.created_at DESC, l.id DESC LIMIT 10'),'threatIps'=>(function(){ $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return $ips; })(),'scanRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]],
  '/users' => ['users.index',['scanCtx'=>scan_active_context(),'users'=>DB::select('SELECT u.*, COUNT(DISTINCT s.id) sites_count, COUNT(f.id) findings_count, MAX(s.last_scan_at) last_scan_at FROM users u LEFT JOIN sites s ON s.server_user_id=u.id LEFT JOIN findings f ON f.site_id=s.id GROUP BY u.id ORDER BY u.name')]],
  '/sites' => ['sites.index',['scanCtx'=>scan_active_context(),'sites'=>DB::select('SELECT s.*, u.name user_name, COUNT(f.id) findings_count, MAX(CASE f.risk WHEN "critical" THEN 4 WHEN "high" THEN 3 WHEN "medium" THEN 2 ELSE 1 END) risk_score FROM sites s LEFT JOIN users u ON u.id=s.server_user_id LEFT JOIN findings f ON f.site_id=s.id AND f.status="new" GROUP BY s.id ORDER BY s.path')]],
  '/findings' => ['findings.index',(function(){ [$w,$p]=finding_filters(); $total=(int)(DB::first('SELECT COUNT(*) c FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w, $p)['c'] ?? 0); $pagination=findings_pagination($total); return ['findings'=>DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY CASE risk WHEN "critical" THEN 1 WHEN "high" THEN 2 WHEN "medium" THEN 3 ELSE 4 END, f.id DESC'.$pagination['sql'],$p), 'total'=>$total, 'pagination'=>$pagination, 'user_names'=>array_column(DB::select('SELECT DISTINCT name FROM users ORDER BY name'), 'name'), 'types'=>array_column(DB::select('SELECT DISTINCT type FROM findings WHERE type IS NOT NULL AND type<>? ORDER BY type', ['']), 'type')]; })()],
- '/logs' => ['logs.index',(function(){ [$w,$p]=log_filters(); $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return ['events'=>DB::select('SELECT l.*, s.name site_name, u.name user_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY l.created_at DESC, l.id DESC LIMIT 1000',$p),'threatIps'=>$ips]; })()],
+ '/logs' => ['logs.index',(function(){ [$w,$p]=log_filters(); $total=(int)(DB::first('SELECT COUNT(*) c FROM log_events l LEFT JOIN sites s ON s.id=l.site_id '.$w,$p)['c']??0); $pagination=table_pagination($total); $ips=[]; foreach(DB::select('SELECT ip,classification,risk FROM threat_ips') as $r) $ips[$r['ip']]=$r; return ['events'=>DB::select('SELECT l.*, s.name site_name, s.path site_path, u.name user_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY l.created_at DESC, l.id DESC'.$pagination['sql'],$p),'threatIps'=>$ips,'total'=>$total,'pagination'=>$pagination]; })()],
  '/file-changes' => ['file-changes.index',(function(){ [$w,$p]=file_change_filters(); return ['changes'=>DB::select('SELECT fs.*, s.name site_name FROM file_snapshots fs LEFT JOIN sites s ON s.id=fs.site_id '.$w.' ORDER BY COALESCE(fs.last_changed_at,fs.first_seen_at,fs.updated_at) DESC LIMIT 1000',$p), 'lastRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]; })()],
  '/quarantine' => ['quarantine.index',['items'=>DB::select('SELECT * FROM quarantine_items ORDER BY id DESC')]],
  '/signatures' => ['signatures.index',(function(){ [$w,$p]=signature_filters(); return ['signatures'=>DB::select('SELECT * FROM malware_signatures '.$w.' ORDER BY enabled DESC,risk DESC,name',$p)]; })()],
