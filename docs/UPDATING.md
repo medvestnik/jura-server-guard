@@ -146,18 +146,31 @@ panel and both scheduled tasks must be running:
 cd /opt/jura-server-guard
 sudo bash bin/install-scan-timers.sh
 
-# Explicitly restore panel autostart and restart it after the code/config update.
+# Explicitly restore autostart and start the panel and both scheduled scanners.
+# Keep these commands in the update block even though the installer does the same:
+# they also recover units that were stopped manually before the update.
 systemctl daemon-reload
-systemctl enable jura-server-guard.service
-systemctl restart jura-server-guard.service
+systemctl enable --now jura-server-guard.service
+systemctl enable --now jura-server-guard-scan.timer jura-server-guard-logs.timer
+systemctl restart jura-server-guard.service \
+  jura-server-guard-scan.timer \
+  jura-server-guard-logs.timer
 
+systemctl is-active jura-server-guard.service
+systemctl is-active jura-server-guard-scan.timer
+systemctl is-active jura-server-guard-logs.timer
 systemctl status jura-server-guard --no-pager -l
 systemctl status jura-server-guard-scan.timer --no-pager -l
 systemctl status jura-server-guard-logs.timer --no-pager -l
-systemctl list-timers 'jura-server-guard-*' --no-pager
-ss -lntp | grep 8765
+systemctl list-timers 'jura-server-guard-*' --all --no-pager
+ss -ltnp | grep ':8765' || true
 curl -m 10 -I http://127.0.0.1:8765/
 ```
+
+All three `systemctl is-active` commands must print `active`. The log-analysis timer
+runs its first job about one minute after activation and the file-scan timer about two
+minutes after activation. They use the same application lock, so do not start both
+`.service` units manually at the same time.
 
 ## 9. Smoke test
 
