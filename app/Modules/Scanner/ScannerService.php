@@ -749,7 +749,7 @@ class ScannerService
         if (($f['risk'] ?? '') !== 'critical') return;
         if ($alreadyFromSignature) return; // already matched a known signature; nothing new to learn
         $sha = $m['sha256'] ?? null;
-        if (!$sha) return;
+        if (!$sha || (int)($m['size'] ?? 0) === 0 || strtolower((string)$sha) === hash('sha256', '')) return;
         $slug = 'auto-' . substr($sha, 0, 16);
         if (DB::first('SELECT id FROM malware_signatures WHERE slug=?', [$slug])) return;
         DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,enabled,source,source_finding_id,source_file_sha256,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?)', [

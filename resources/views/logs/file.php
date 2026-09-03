@@ -22,7 +22,7 @@
   <?php if(!empty($fileContext['exists']) && $actionsEnabled): ?>
     <div class="card actions">
       <form method="post" action="/logs/file/quarantine" class="inline-form" onsubmit="return confirm(<?= e(json_encode(t('Move file to quarantine?'))) ?>)"><input type="hidden" name="event_id" value="<?= e($event['id']) ?>"><button class="btn danger"><?= e(t('Quarantine')) ?></button></form>
-      <form method="post" action="/logs/file/delete" class="inline-form" onsubmit="return confirm(<?= e(json_encode(t('PERMANENTLY delete this file from the server? It cannot be restored.'))) ?>)"><input type="hidden" name="event_id" value="<?= e($event['id']) ?>"><button class="btn danger"><?= e(t('Delete from server')) ?></button></form>
+      <form method="post" action="/logs/file/delete" class="inline-form" onsubmit="return confirm(<?= e(json_encode(t('PERMANENTLY delete this file from the server? It cannot be restored.'))) ?>)"><input type="hidden" name="event_id" value="<?= e($event['id']) ?>"><button class="btn danger"><?= e(t('Delete permanently (no quarantine copy)')) ?></button></form>
     </div>
   <?php elseif(!empty($fileContext['exists'])): ?><div class="notice warning"><?= e(t('Web actions are disabled by JURA_WEB_ACTIONS_ENABLED.')) ?></div><?php endif ?>
 

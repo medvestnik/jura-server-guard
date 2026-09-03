@@ -536,6 +536,7 @@ return [
     'The panel process cannot read this file.' => 'Процесс панели не может прочитать этот файл.',
     'Failed to read file content.' => 'Не удалось прочитать содержимое файла.',
     'Delete from server' => 'Удалить с сервера',
+    'Delete permanently (no quarantine copy)' => 'Удалить безвозвратно (без копии в карантине)',
     'PERMANENTLY delete this file from the server? It cannot be restored.' => 'БЕЗВОЗВРАТНО удалить этот файл с сервера? Восстановить его будет невозможно.',
     'File permanently deleted from the server.' => 'Файл безвозвратно удалён с сервера.',
     'File could not be deleted:' => 'Не удалось удалить файл:',

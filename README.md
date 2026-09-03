@@ -252,19 +252,24 @@ The original SHA-256, owner, group, permissions, mtime, original path, and quara
 When `JURA_WEB_ACTIONS_ENABLED=true`, the **Findings** page shows a checkbox per row plus
 "Quarantine selected" and "Delete selected" buttons, so a mass-infection incident (dozens or
 hundreds of matched webshells from one signature) can be cleaned up in one action instead of
-one file at a time. Every non-deleted row and finding detail page also has a **Delete from
-server** button for permanent single-file deletion. If more findings match the current filter
+one file at a time. Every non-deleted row and finding detail page also has a **Delete permanently
+(no quarantine copy)** button for permanent single-file deletion. If more findings match the current filter
 than are shown on the current page, a **Select all N matching current filter** checkbox applies the
 action to every matching finding server-side, not just the visible ones.
 
 **Quarantine** moves the file into the quarantine directory as before (reversible via
-**Restore**). **Delete** is new and permanent: the file is captured into `quarantine_items`
+**Restore**). **Delete permanently (no quarantine copy)** is permanent: the file is captured into `quarantine_items`
 (SHA-256, owner, permissions, path, reason) for the audit trail exactly like quarantine, then
 immediately removed from disk with no way to restore it — the finding and quarantine item are
-both marked `deleted`. If the finding was already quarantined, **Delete from server** removes
+both marked `deleted`. If the finding was already quarantined, **Delete permanently** removes
 its quarantine copy instead. Both actions require an explicit confirmation dialog showing how many
 files will be affected, and both are always disabled unless `JURA_WEB_ACTIONS_ENABLED=true`
 (same gate as the existing single-file quarantine action).
+
+Zero-byte files are never used to create or match automatic SHA-256 signatures. The empty-file
+hash is identical for every empty file, so treating it as malware would turn one cache placeholder
+into false positives across unrelated sites. `artisan migrate` disables previously auto-created
+empty-file signatures and marks their still-new findings as ignored.
 
 Bulk actions run in a background PHP process. The Findings page displays the action type,
 processed/total count, successful and failed counts, current path, and a progress bar updated

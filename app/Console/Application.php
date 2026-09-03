@@ -89,6 +89,9 @@ class Application
         $this->ensureColumn('file_snapshots', 'telegram_notification_error', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
         $this->ensureSignatureTables($driver);
         $this->seedBuiltinSignatures();
+        $emptyHash = hash('sha256', '');
+        DB::statement("UPDATE malware_signatures SET enabled=0,updated_at=? WHERE source='auto_finding' AND (source_file_sha256=? OR pattern_json LIKE ?)", [now(),$emptyHash,'%'.$emptyHash.'%']);
+        DB::statement("UPDATE findings SET status='ignored',updated_at=? WHERE status='new' AND size=0 AND sha256=? AND matched_signature_source='auto_finding'", [now(),$emptyHash]);
 
         $this->ensureColumn('scan_runs', 'profile', $driver === 'mysql' ? "VARCHAR(32) NOT NULL DEFAULT 'fast'" : "TEXT NOT NULL DEFAULT 'fast'");
         $this->ensureColumn('scan_runs', 'files_scanned', $driver === 'mysql' ? 'BIGINT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0');
