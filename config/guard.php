@@ -81,6 +81,7 @@ return [
     'telegram_enabled' => bool_env('JURA_TELEGRAM_ENABLED', false),
     'telegram_bot_token' => env_value('JURA_TELEGRAM_BOT_TOKEN', ''),
     'telegram_chat_id' => env_value('JURA_TELEGRAM_CHAT_ID', ''),
+    'telegram_finding_examples' => max(1, min(15, (int) env_value('JURA_TELEGRAM_FINDING_EXAMPLES', 8))),
     'notify_new_critical_high_findings' => bool_env('JURA_NOTIFY_NEW_CRITICAL_HIGH_FINDINGS', true),
     'notify_untrusted_webroot_files' => bool_env('JURA_NOTIFY_UNTRUSTED_WEBROOT_FILES', true),
     'notify_cron_changes' => bool_env('JURA_NOTIFY_CRON_CHANGES', true),

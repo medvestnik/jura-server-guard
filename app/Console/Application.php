@@ -29,13 +29,13 @@ class Application
                 'guard:ip-list' => $this->ipList(), 'guard:ip-add' => $this->ipAdd($argv), 'guard:ip-remove' => $this->ipRemove($argv), 'guard:find-hash' => $this->findHash($argv),
                 'guard:incident-import' => $this->incidentImport($argv), 'guard:incident-list' => $this->incidentList(),
                 'guard:trust-ip' => $this->trustIp($argv), 'guard:untrust-ip' => $this->untrustIp($argv), 'guard:trusted-ips' => $this->trustedIpsList(),
-                'guard:cron-scan' => $this->cronScan(), 'guard:telegram-test' => $this->telegramTest($argv),
+                'guard:cron-scan' => $this->cronScan(), 'guard:telegram-test' => $this->telegramTest($argv), 'guard:telegram-findings' => $this->telegramFindings($argv),
                 'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
             };
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
     }
 
-    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--include-vendor] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-sweep {signature_id}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  guard:incident-import {path.json} [--dry-run]\n  guard:incident-list\n  guard:trust-ip {ip} [--label=TEXT] [--notes=TEXT]\n  guard:untrust-ip {ip}\n  guard:trusted-ips\n  guard:cron-scan\n  guard:telegram-test [--message=TEXT]\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
+    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--include-vendor] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-sweep {signature_id}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  guard:incident-import {path.json} [--dry-run]\n  guard:incident-list\n  guard:trust-ip {ip} [--label=TEXT] [--notes=TEXT]\n  guard:untrust-ip {ip}\n  guard:trusted-ips\n  guard:cron-scan\n  guard:telegram-test [--message=TEXT]\n  guard:telegram-findings [scan_run_id]\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
     private function noop(string $cmd): int { if ($cmd==='key:generate') $this->ensureKey(); echo "$cmd complete.\n"; return 0; }
     private function ensureKey(): void { $env=base_path('.env'); if (!is_file($env) && is_file(base_path('.env.example'))) copy(base_path('.env.example'), $env); if (is_file($env)) { $c=file_get_contents($env); if (preg_match('/^APP_KEY=\s*$/m',$c)) file_put_contents($env,preg_replace('/^APP_KEY=\s*$/m','APP_KEY=base64:'.base64_encode(random_bytes(32)),$c)); } }
 
@@ -83,6 +83,10 @@ class Application
         $this->ensureColumn('sites', 'cms_confidence', $driver === 'mysql' ? 'INT NULL' : 'INTEGER NULL');
         foreach (['first_seen_scan_id','last_seen_scan_id','last_matched_signature_id'] as $col) $this->ensureColumn('findings', $col, $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
         foreach (['matched_signature_name','matched_signature_source','signature_match_details'] as $col) $this->ensureColumn('findings', $col, $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+        $this->ensureColumn('findings', 'telegram_notified_at', $driver === 'mysql' ? 'DATETIME NULL' : 'TEXT NULL');
+        $this->ensureColumn('findings', 'telegram_notification_error', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+        $this->ensureColumn('file_snapshots', 'telegram_notified_at', $driver === 'mysql' ? 'DATETIME NULL' : 'TEXT NULL');
+        $this->ensureColumn('file_snapshots', 'telegram_notification_error', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
         $this->ensureSignatureTables($driver);
         $this->seedBuiltinSignatures();
 
@@ -564,5 +568,14 @@ class Application
         if ($result['ok']) { echo "Sent.\n"; return 0; }
         fwrite(STDERR, "Failed: {$result['error']}\n");
         return 1;
+    }
+
+    private function telegramFindings(array $argv): int {
+        $runId = (int)($argv[2] ?? 0);
+        if ($runId < 1) $runId = (int)(DB::first("SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') ORDER BY id DESC LIMIT 1")['id'] ?? 0);
+        if ($runId < 1) { fwrite(STDERR,"No completed scan run found.\n"); return 1; }
+        (new AlertService())->sendScanNotifications($runId);
+        echo "Telegram finding summaries processed for scan #{$runId}. Check notifications_log for delivery status.\n";
+        return 0;
     }
 }

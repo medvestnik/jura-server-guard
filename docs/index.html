@@ -114,9 +114,15 @@ sudo bash bin/install-security-monitors.sh</code></pre>
         </ol>
         <pre><code class="language-env">JURA_TELEGRAM_ENABLED=true
 JURA_TELEGRAM_BOT_TOKEN=123456789:telegram-bot-token
-JURA_TELEGRAM_CHAT_ID=123456789</code></pre>
+JURA_TELEGRAM_CHAT_ID=123456789
+JURA_TELEGRAM_FINDING_EXAMPLES=8</code></pre>
         <pre><code class="language-bash">cd /opt/jura-server-guard
 /opt/php83/bin/php artisan guard:telegram-test --message="Jura Server Guard Telegram test"</code></pre>
+        <p>Критические и высокие находки отправляются одной сводкой после проверки каждого сайта, а не отдельным сообщением на каждый файл. Поэтому уведомления появляются до завершения многочасового полного сканирования и не создают лавину запросов к Telegram.</p>
+        <p>Последние успешные и неудачные попытки видны на странице «Настройки». При ответе <code>HTTP 429 Too Many Requests</code> Jura выдерживает указанный Telegram интервал и один раз повторяет отправку. Неотправленные сводки конкретного сканирования можно обработать повторно:</p>
+        <pre><code class="language-bash">/opt/php83/bin/php artisan guard:telegram-findings 57
+# Без номера используется последнее завершённое сканирование:
+/opt/php83/bin/php artisan guard:telegram-findings</code></pre>
         <div class="callout tip"><strong>Tip.</strong> Если <code>getUpdates</code> возвращает пустой результат, отправьте боту ещё одно сообщение и обновите URL. Если бот используется в группе, сначала добавьте бота в группу и только потом проверяйте <code>getUpdates</code>.</div>
       </section>
 
@@ -273,6 +279,7 @@ wp plugin verify-checksums plugin-slug --path=/path/to/site --allow-root</code><
 /opt/php83/bin/php artisan guard:prune --days=30
 /opt/php83/bin/php artisan guard:optimize-db
 /opt/php83/bin/php artisan guard:telegram-test --message="test"
+/opt/php83/bin/php artisan guard:telegram-findings 57
 /opt/php83/bin/php bin/ssh-key-monitor.php
 /opt/php83/bin/php bin/user-cron-monitor.php
 /opt/php83/bin/php bin/process-monitor.php --dry-run</code></pre>

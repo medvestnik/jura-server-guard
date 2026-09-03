@@ -10,6 +10,7 @@ body{font-family:system-ui;margin:0;background:#0f172a;color:#e2e8f0}a{color:#93
 <?php include base_path('resources/views/scan_active_banner.php'); ?>
 <main class="wrap"><?= $content ?? '' ?></main>
 <script>
+function submitIpBlock(form,message){if(!confirm(message))return false;var button=form.querySelector('button');if(button){button.disabled=true;button.textContent=<?= json_encode(t('Blocking…')) ?>;}return true;}
 (function(){
   function value(cell){
     var raw=(cell.dataset.sortValue||cell.textContent||'').trim().replace(/\s+/g,' ');
