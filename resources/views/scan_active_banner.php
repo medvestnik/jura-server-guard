@@ -16,8 +16,9 @@
 (function refreshWhenIdle(){
   setTimeout(function(){
     var detailsOpen=Array.from(document.querySelectorAll('.details-row')).some(function(row){return row.style.display!=='none';});
+    var explicitPause=document.querySelector('[data-pause-auto-refresh]');
     var editing=/^(INPUT|SELECT|TEXTAREA)$/.test((document.activeElement||{}).tagName||'');
-    if(detailsOpen||editing){refreshWhenIdle();return;}
+    if(detailsOpen||explicitPause||editing){refreshWhenIdle();return;}
     location.reload();
   },4000);
 })();

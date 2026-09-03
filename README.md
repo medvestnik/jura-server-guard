@@ -79,6 +79,22 @@ Default service command, using the PHP binary selected by the installer and bind
 
 `artisan serve` reads `JURA_PHP_BIN` from `.env` and starts the built-in server with that same binary, for example `/opt/php83/bin/php -S 127.0.0.1:8765 -t public public/index.php`. If `JURA_PHP_BIN` is unset or not executable, it falls back to `PHP_BINARY`.
 
+For remote access, keep the panel bound to localhost and use an SSH key and tunnel. On the
+administrator's computer, reuse an existing Ed25519 key or create one, install only its
+public half on the server, then open the tunnel:
+
+```bash
+ls -l ~/.ssh/id_ed25519 ~/.ssh/id_ed25519.pub
+# Run only when the key does not exist:
+ssh-keygen -t ed25519 -a 100 -f ~/.ssh/id_ed25519 -C "jura-server-guard-admin"
+
+ssh-copy-id -p 22222 -i ~/.ssh/id_ed25519.pub root@46.4.176.222
+ssh -x -N -p 22222 -i ~/.ssh/id_ed25519 -L 8765:127.0.0.1:8765 root@46.4.176.222
+```
+
+Open `http://127.0.0.1:8765` while the tunnel is running. Never copy the private
+`~/.ssh/id_ed25519` file to the server or expose port 8765 publicly.
+
 Panel pages:
 
 - Dashboard

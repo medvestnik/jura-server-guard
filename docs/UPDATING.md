@@ -146,11 +146,17 @@ panel and both scheduled tasks must be running:
 cd /opt/jura-server-guard
 sudo bash bin/install-scan-timers.sh
 
+# Explicitly restore panel autostart and restart it after the code/config update.
+systemctl daemon-reload
+systemctl enable jura-server-guard.service
+systemctl restart jura-server-guard.service
+
 systemctl status jura-server-guard --no-pager -l
 systemctl status jura-server-guard-scan.timer --no-pager -l
 systemctl status jura-server-guard-logs.timer --no-pager -l
 systemctl list-timers 'jura-server-guard-*' --no-pager
 ss -lntp | grep 8765
+curl -m 10 -I http://127.0.0.1:8765/
 ```
 
 ## 9. Smoke test

@@ -154,8 +154,19 @@ JURA_PROCESS_MONITOR_IGNORE_REGEX=</code></pre>
 
       <section id="panel-access" data-title="accessing panel ssh tunnel browser localhost expose">
         <div class="section-heading"><p class="kicker">Accessing the panel</p><h2>Доступ к web-панели</h2></div>
-        <p>Панель должна слушать только localhost на сервере. Для удалённой работы откройте SSH-туннель с вашей рабочей машины:</p>
-        <pre><code class="language-bash">ssh -p 22222 -L 8765:127.0.0.1:8765 root@SERVER_IP</code></pre>
+        <p>Панель должна слушать только localhost на сервере. SSH-ключ создаётся на рабочем компьютере. Сначала проверьте, нет ли уже готовой пары ключей:</p>
+        <pre><code class="language-bash">ls -l ~/.ssh/id_ed25519 ~/.ssh/id_ed25519.pub
+cat ~/.ssh/id_ed25519.pub</code></pre>
+        <p>Если файлов нет, создайте ключ. Закрытый файл <code>~/.ssh/id_ed25519</code> никому не передавайте; на сервер устанавливается только файл с расширением <code>.pub</code>:</p>
+        <pre><code class="language-bash">ssh-keygen -t ed25519 -a 100 -f ~/.ssh/id_ed25519 -C "jura-server-guard-admin"</code></pre>
+        <p>Установите публичный ключ на сервер (при первом подключении потребуется текущий SSH-пароль):</p>
+        <pre><code class="language-bash">ssh-copy-id -p 22222 -i ~/.ssh/id_ed25519.pub root@46.4.176.222</code></pre>
+        <p>Если в macOS команда <code>ssh-copy-id</code> не установлена, используйте эквивалент:</p>
+        <pre><code class="language-bash">cat ~/.ssh/id_ed25519.pub | ssh -p 22222 root@46.4.176.222 \
+  'umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; cat >> ~/.ssh/authorized_keys'</code></pre>
+        <p>После этого откройте SSH-туннель с вашей рабочей машины, явно указав закрытый ключ:</p>
+        <pre><code class="language-bash">ssh -x -N -p 22222 -i ~/.ssh/id_ed25519 \
+  -L 8765:127.0.0.1:8765 root@46.4.176.222</code></pre>
         <p>Затем откройте в браузере:</p>
         <pre><code class="language-text">http://127.0.0.1:8765</code></pre>
         <div class="callout danger"><strong>Danger.</strong> Не публикуйте порт <code>8765</code> в интернет. Даже при наличии логина панель управляет сканированием, просмотром файлов, карантином и потенциальным restore. Доступ должен идти через SSH-туннель, VPN или другой закрытый административный контур.</div>
@@ -294,11 +305,18 @@ sudo bash bin/install-security-monitors.sh
 # переустановить unit-файлы, включить и перезапустить оба таймера
 sudo bash bin/install-scan-timers.sh
 
+# гарантированно включить автозапуск и перезапустить web-панель после обновления
+systemctl daemon-reload
+systemctl enable jura-server-guard.service
+systemctl restart jura-server-guard.service
+
 systemctl status jura-server-guard --no-pager -l
 systemctl status jura-server-guard-scan.timer --no-pager -l
 systemctl status jura-server-guard-logs.timer --no-pager -l
 systemctl status jura-server-guard-ssh-keys.path --no-pager
-systemctl list-timers | grep jura-server-guard</code></pre>
+systemctl list-timers | grep jura-server-guard
+ss -ltnp | grep ':8765'
+curl -m 10 -I http://127.0.0.1:8765/</code></pre>
         <div class="callout tip"><strong>Tip.</strong> Если <code>composer.json</code> и <code>composer.lock</code> не изменились, Composer можно пропустить. Если Composer нужен, определяйте доступный <code>composer</code> или <code>composer.phar</code> на сервере; не полагайтесь на жёсткий путь <code>/root/jura-server-guard/composer.phar</code>.</div>
       </section>
 
