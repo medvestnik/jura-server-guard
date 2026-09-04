@@ -312,18 +312,25 @@ sudo bash bin/install-security-monitors.sh
 # переустановить unit-файлы, включить и перезапустить оба таймера
 sudo bash bin/install-scan-timers.sh
 
-# гарантированно включить автозапуск и перезапустить web-панель после обновления
+# гарантированно включить и сразу запустить панель и оба таймера после обновления
 systemctl daemon-reload
-systemctl enable jura-server-guard.service
-systemctl restart jura-server-guard.service
+systemctl enable --now jura-server-guard.service
+systemctl enable --now jura-server-guard-scan.timer jura-server-guard-logs.timer
+systemctl restart jura-server-guard.service \
+  jura-server-guard-scan.timer \
+  jura-server-guard-logs.timer
 
+systemctl is-active jura-server-guard.service
+systemctl is-active jura-server-guard-scan.timer
+systemctl is-active jura-server-guard-logs.timer
 systemctl status jura-server-guard --no-pager -l
 systemctl status jura-server-guard-scan.timer --no-pager -l
 systemctl status jura-server-guard-logs.timer --no-pager -l
 systemctl status jura-server-guard-ssh-keys.path --no-pager
-systemctl list-timers | grep jura-server-guard
-ss -ltnp | grep ':8765'
+systemctl list-timers 'jura-server-guard-*' --all --no-pager
+ss -ltnp | grep ':8765' || true
 curl -m 10 -I http://127.0.0.1:8765/</code></pre>
+        <p>Все три команды <code>systemctl is-active</code> должны вывести <code>active</code>. Первый анализ логов запустится примерно через минуту, файловое сканирование — примерно через две минуты. Оба задания используют общую блокировку, поэтому не запускайте их <code>.service</code> вручную одновременно.</p>
         <div class="callout tip"><strong>Tip.</strong> Если <code>composer.json</code> и <code>composer.lock</code> не изменились, Composer можно пропустить. Если Composer нужен, определяйте доступный <code>composer</code> или <code>composer.phar</code> на сервере; не полагайтесь на жёсткий путь <code>/root/jura-server-guard/composer.phar</code>.</div>
       </section>
 

@@ -104,12 +104,12 @@ WantedBy=timers.target
 EOF
 
 "$SYSTEMCTL_CMD" daemon-reload
-"$SYSTEMCTL_CMD" enable jura-server-guard-scan.timer jura-server-guard-logs.timer
+"$SYSTEMCTL_CMD" enable --now jura-server-guard-scan.timer jura-server-guard-logs.timer
 "$SYSTEMCTL_CMD" restart jura-server-guard-scan.timer jura-server-guard-logs.timer
 
 PANEL_RESTARTED="no"
 if "$SYSTEMCTL_CMD" cat jura-server-guard.service >/dev/null 2>&1; then
-  "$SYSTEMCTL_CMD" enable jura-server-guard.service
+  "$SYSTEMCTL_CMD" enable --now jura-server-guard.service
   "$SYSTEMCTL_CMD" restart jura-server-guard.service
   PANEL_RESTARTED="yes"
 fi
