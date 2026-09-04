@@ -733,14 +733,26 @@ class ScannerService
         $fingerprint = hash('sha256', $path.'|'.$f['type'].'|'.($f['rule_key'] ?? '').'|'.($m['sha256'] ?? ''));
         $findingHash = hash('sha256', $path.'|'.$f['type'].'|'.($f['rule_key'] ?? '').'|'.$fingerprint);
         $ignored = DB::first("SELECT id,sha256 FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status='ignored'", [$findingHash,$pathHash,$path]);
-        if ($ignored && ($ignored['sha256'] ?? null) === ($m['sha256'] ?? null)) return;
+        if ($ignored && ($ignored['sha256'] ?? null) === ($m['sha256'] ?? null)) {
+            $this->recordScanFinding($runId, (int)$ignored['id']);
+            return;
+        }
         $row = DB::first("SELECT id,status FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status NOT IN ('ignored','quarantined')", [$findingHash,$pathHash,$path]);
         $logIds = json_encode($f['log_ids'] ?? [], JSON_UNESCAPED_SLASHES);
-        if ($row) DB::statement('UPDATE findings SET site_id=?,path_hash=?,finding_hash=?,risk=?,rule_key=?,title=?,description=?,matched_rules=?,related_log_event_ids=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,last_seen_scan_id=?,last_matched_signature_id=?,matched_signature_name=?,matched_signature_source=?,signature_match_details=?,updated_at=? WHERE id=?', [$siteId,$pathHash,$findingHash,$f['risk'],$f['rule_key'] ?? null,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),$runId,$sigId,$sigName,$sigSource,$matchDetails,now(),$row['id']]);
-        else {
+        if ($row) {
+            $findingId = (int)$row['id'];
+            DB::statement('UPDATE findings SET site_id=?,path_hash=?,finding_hash=?,risk=?,rule_key=?,title=?,description=?,matched_rules=?,related_log_event_ids=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,last_seen_scan_id=?,last_matched_signature_id=?,matched_signature_name=?,matched_signature_source=?,signature_match_details=?,updated_at=? WHERE id=?', [$siteId,$pathHash,$findingHash,$f['risk'],$f['rule_key'] ?? null,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),$runId,$sigId,$sigName,$sigSource,$matchDetails,now(),$findingId]);
+        } else {
             $findingId = DB::insert('INSERT INTO findings (scan_run_id,first_seen_scan_id,last_seen_scan_id,last_matched_signature_id,matched_signature_name,matched_signature_source,signature_match_details,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$runId,$runId,$runId,$sigId,$sigName,$sigSource,$matchDetails,$siteId,$path,$pathHash,$findingHash,$f['risk'],'new',$f['type'],$f['rule_key'] ?? null,$fingerprint,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),now(),now()]);
             $this->maybeAutoCreateSignature($findingId, $path, $f, $m, $sig !== null);
         }
+        $this->recordScanFinding($runId, $findingId);
+    }
+
+    private function recordScanFinding(int $runId, int $findingId): void
+    {
+        $verb = DB::driver() === 'mysql' ? 'INSERT IGNORE' : 'INSERT OR IGNORE';
+        DB::statement("{$verb} INTO scan_run_findings (scan_run_id,finding_id,observed_at) VALUES (?,?,?)", [$runId,$findingId,now()]);
     }
 
     private function maybeAutoCreateSignature(int $findingId, string $path, array $f, array $m, bool $alreadyFromSignature): void

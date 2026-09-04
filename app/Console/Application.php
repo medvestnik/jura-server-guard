@@ -87,6 +87,7 @@ class Application
         $this->ensureColumn('findings', 'telegram_notification_error', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
         $this->ensureColumn('file_snapshots', 'telegram_notified_at', $driver === 'mysql' ? 'DATETIME NULL' : 'TEXT NULL');
         $this->ensureColumn('file_snapshots', 'telegram_notification_error', $driver === 'mysql' ? 'TEXT NULL' : 'TEXT NULL');
+        $this->ensureScanRunFindingsTable($driver);
         $this->ensureSignatureTables($driver);
         $this->seedBuiltinSignatures();
         $emptyHash = hash('sha256', '');
@@ -243,6 +244,20 @@ class Application
     {
         if ($driver === 'mysql') DB::pdo()->exec("CREATE TABLE IF NOT EXISTS restore_actions (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, admin_user_id BIGINT UNSIGNED NULL, original_path VARCHAR(2048) NOT NULL, backup_provider VARCHAR(64) NOT NULL, backup_user VARCHAR(255) NULL, backup_date VARCHAR(64) NULL, backup_source_archive TEXT NULL, previous_sha256 CHAR(64) NULL, restored_sha256 CHAR(64) NULL, previous_size BIGINT NULL, restored_size BIGINT NULL, quarantine_path TEXT NULL, created_at DATETIME NULL, status VARCHAR(32) NOT NULL DEFAULT 'pending', error_message TEXT NULL, INDEX restore_actions_path_idx(original_path(191))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         else DB::pdo()->exec("CREATE TABLE IF NOT EXISTS restore_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_user_id INTEGER NULL, original_path TEXT NOT NULL, backup_provider TEXT NOT NULL, backup_user TEXT NULL, backup_date TEXT NULL, backup_source_archive TEXT NULL, previous_sha256 TEXT NULL, restored_sha256 TEXT NULL, previous_size INTEGER NULL, restored_size INTEGER NULL, quarantine_path TEXT NULL, created_at TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT NULL)");
+    }
+
+    private function ensureScanRunFindingsTable(string $driver): void
+    {
+        if ($driver === 'mysql') {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS scan_run_findings (scan_run_id BIGINT UNSIGNED NOT NULL, finding_id BIGINT UNSIGNED NOT NULL, observed_at DATETIME NULL, PRIMARY KEY (scan_run_id,finding_id), INDEX scan_run_findings_finding_idx(finding_id), CONSTRAINT scan_run_findings_run_fk FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id) ON DELETE CASCADE, CONSTRAINT scan_run_findings_finding_fk FOREIGN KEY(finding_id) REFERENCES findings(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            DB::pdo()->exec("INSERT IGNORE INTO scan_run_findings (scan_run_id,finding_id,observed_at) SELECT first_seen_scan_id,id,COALESCE(first_seen_at,created_at) FROM findings WHERE first_seen_scan_id IS NOT NULL");
+            DB::pdo()->exec("INSERT IGNORE INTO scan_run_findings (scan_run_id,finding_id,observed_at) SELECT last_seen_scan_id,id,COALESCE(last_seen_at,updated_at) FROM findings WHERE last_seen_scan_id IS NOT NULL");
+        } else {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS scan_run_findings (scan_run_id INTEGER NOT NULL, finding_id INTEGER NOT NULL, observed_at TEXT NULL, PRIMARY KEY (scan_run_id,finding_id), FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id) ON DELETE CASCADE, FOREIGN KEY(finding_id) REFERENCES findings(id) ON DELETE CASCADE)");
+            DB::pdo()->exec('CREATE INDEX IF NOT EXISTS scan_run_findings_finding_idx ON scan_run_findings(finding_id)');
+            DB::pdo()->exec("INSERT OR IGNORE INTO scan_run_findings (scan_run_id,finding_id,observed_at) SELECT first_seen_scan_id,id,COALESCE(first_seen_at,created_at) FROM findings WHERE first_seen_scan_id IS NOT NULL");
+            DB::pdo()->exec("INSERT OR IGNORE INTO scan_run_findings (scan_run_id,finding_id,observed_at) SELECT last_seen_scan_id,id,COALESCE(last_seen_at,updated_at) FROM findings WHERE last_seen_scan_id IS NOT NULL");
+        }
     }
 
     private function ensureThreatIpsTable(string $driver): void
