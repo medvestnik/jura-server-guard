@@ -2,6 +2,7 @@
 namespace App\Console;
 
 use App\Modules\Backups\IspmanagerBackupService;
+use App\Modules\Feed\FeedService;
 use App\Modules\Incidents\IncidentImportService;
 use App\Modules\LogAnalyzer\LogAnalyzerService;
 use App\Modules\Notifications\AlertService;
@@ -28,6 +29,7 @@ class Application
                 'guard:sites' => $this->sites(), 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:findings-bulk-action' => $this->bulkFindingsAction((string)($argv[2] ?? '')), 'guard:status' => $this->status(),
                 'guard:ip-list' => $this->ipList(), 'guard:ip-add' => $this->ipAdd($argv), 'guard:ip-remove' => $this->ipRemove($argv), 'guard:find-hash' => $this->findHash($argv),
                 'guard:incident-import' => $this->incidentImport($argv), 'guard:incident-list' => $this->incidentList(),
+                'guard:feed-check' => $this->feedCheck(), 'guard:feed-update' => $this->feedUpdate($argv), 'guard:feed-list' => $this->feedList(), 'guard:feed-import' => $this->feedImport($argv),
                 'guard:trust-ip' => $this->trustIp($argv), 'guard:untrust-ip' => $this->untrustIp($argv), 'guard:trusted-ips' => $this->trustedIpsList(),
                 'guard:cron-scan' => $this->cronScan(), 'guard:telegram-test' => $this->telegramTest($argv), 'guard:telegram-findings' => $this->telegramFindings($argv),
                 'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
@@ -35,7 +37,7 @@ class Application
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
     }
 
-    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--include-vendor] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-sweep {signature_id}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  guard:incident-import {path.json} [--dry-run]\n  guard:incident-list\n  guard:trust-ip {ip} [--label=TEXT] [--notes=TEXT]\n  guard:untrust-ip {ip}\n  guard:trusted-ips\n  guard:cron-scan\n  guard:telegram-test [--message=TEXT]\n  guard:telegram-findings [scan_run_id]\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
+    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--include-vendor] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-sweep {signature_id}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  guard:incident-import {path.json} [--dry-run]\n  guard:incident-list\n  guard:feed-check\n  guard:feed-update [tag] [--yes]\n    Without [tag], updates to whatever guard:feed-check last saw as latest (or checks first if never run). --yes skips the confirmation prompt (for cron).\n  guard:feed-list\n  guard:feed-import {incident_id} [--dry-run]\n    Signatures a feed import brings always land disabled/pending_feed_review regardless of --dry-run — approve them via guard:signature-enable or the Signatures page.\n  guard:trust-ip {ip} [--label=TEXT] [--notes=TEXT]\n  guard:untrust-ip {ip}\n  guard:trusted-ips\n  guard:cron-scan\n  guard:telegram-test [--message=TEXT]\n  guard:telegram-findings [scan_run_id]\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
     private function noop(string $cmd): int { if ($cmd==='key:generate') $this->ensureKey(); echo "$cmd complete.\n"; return 0; }
     private function ensureKey(): void { $env=base_path('.env'); if (!is_file($env) && is_file(base_path('.env.example'))) copy(base_path('.env.example'), $env); if (is_file($env)) { $c=file_get_contents($env); if (preg_match('/^APP_KEY=\s*$/m',$c)) file_put_contents($env,preg_replace('/^APP_KEY=\s*$/m','APP_KEY=base64:'.base64_encode(random_bytes(32)),$c)); } }
 
@@ -203,7 +205,10 @@ class Application
 
     private function signatureToggle(int $id, bool $enabled): int
     {
-        DB::statement('UPDATE malware_signatures SET enabled=?,updated_at=? WHERE id=?', [$enabled ? 1 : 0, now(), $id]);
+        // Enabling a pending_feed_review signature IS the review approval (see the matching
+        // /signatures/toggle web handler in public/index.php for why disabling doesn't undo it).
+        if ($enabled) DB::statement("UPDATE malware_signatures SET enabled=1, review_status=CASE WHEN review_status='pending_feed_review' THEN 'approved' ELSE review_status END, updated_at=? WHERE id=?", [now(), $id]);
+        else DB::statement('UPDATE malware_signatures SET enabled=0,updated_at=? WHERE id=?', [now(), $id]);
         echo ($enabled ? 'Enabled' : 'Disabled') . " signature #$id\n";
         return 0;
     }
@@ -294,11 +299,34 @@ class Application
             DB::pdo()->exec("CREATE TABLE IF NOT EXISTS incident_file_iocs (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NULL, sha256 TEXT NULL UNIQUE, size INTEGER NULL, names_json TEXT NULL, role TEXT NULL, risk TEXT NULL, confidence TEXT NULL, scope TEXT NULL, dedup_key TEXT NULL UNIQUE, created_at TEXT, updated_at TEXT)");
         }
         $this->ensureColumn('malware_signatures', 'incident_id', $driver === 'mysql' ? 'BIGINT NULL' : 'INTEGER NULL');
+        // review_status defaults to 'approved' so every pre-existing signature (builtin/manual/
+        // incident-imported) keeps behaving exactly as before. Only signatures brought in through
+        // guard:feed-update land as 'pending_feed_review' (see IncidentImportService::upsertSignature).
+        $this->ensureColumn('malware_signatures', 'review_status', $driver === 'mysql' ? "VARCHAR(32) NOT NULL DEFAULT 'approved'" : "TEXT NOT NULL DEFAULT 'approved'");
+        $this->ensureColumn('malware_signatures', 'feed_release_tag', $driver === 'mysql' ? 'VARCHAR(64) NULL' : 'TEXT NULL');
         $this->ensureFileIocSha256Nullable($driver);
         $this->ensureIncidentLinkTables($driver);
         $this->ensureTrustedIpsTable($driver);
         $this->ensureCronMonitorTable($driver);
         $this->ensureNotificationsTable($driver);
+        $this->ensureFeedTables($driver);
+    }
+
+    /**
+     * feed_incidents tracks what guard:feed-update has seen published in
+     * jura-server-guard-signatures-feed (config('guard.feed_repo')) — independent of whether it
+     * has actually been imported into malware_signatures yet. This is what powers the panel's
+     * Feed page ("new published incidents") and lets an admin browse before importing anything.
+     * Runtime feed state that isn't a list (pinned tag, last checked/fetched timestamps) lives in
+     * the existing generic `settings` table instead of a second one-row table — see FeedService.
+     */
+    private function ensureFeedTables(string $driver): void
+    {
+        if ($driver === 'mysql') {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS feed_incidents (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, incident_id VARCHAR(191) NOT NULL, release_tag VARCHAR(64) NOT NULL, file_path VARCHAR(255) NOT NULL, sha256 CHAR(64) NOT NULL, title VARCHAR(255) NULL, severity VARCHAR(32) NULL, signature_slugs_json LONGTEXT NULL, import_status VARCHAR(32) NOT NULL DEFAULT 'not_imported', imported_at DATETIME NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_feed_incidents_incident_id(incident_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        } else {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS feed_incidents (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id TEXT NOT NULL UNIQUE, release_tag TEXT NOT NULL, file_path TEXT NOT NULL, sha256 TEXT NOT NULL, title TEXT NULL, severity TEXT NULL, signature_slugs_json TEXT NULL, import_status TEXT NOT NULL DEFAULT 'not_imported', imported_at TEXT NULL, created_at TEXT, updated_at TEXT)");
+        }
     }
 
     /**
@@ -551,6 +579,55 @@ class Application
         foreach (DB::select('SELECT id,external_id,severity,status,title,imported_at FROM incidents ORDER BY imported_at DESC') as $r) {
             echo "{$r['id']}\t{$r['external_id']}\t{$r['severity']}\t".($r['status'] ?? '')."\t{$r['title']}\t{$r['imported_at']}\n";
         }
+        return 0;
+    }
+
+    private function feedCheck(): int {
+        $result = (new FeedService())->checkLatest();
+        if (!$result['ok']) { fwrite(STDERR, "Feed check failed: {$result['error']}\n"); return 1; }
+        echo "Latest published feed release: {$result['tag']}" . (($result['published_at'] ?? '') !== '' ? " (published {$result['published_at']})" : '') . "\n";
+        $pinned = (new FeedService())->pinnedTag();
+        echo $pinned ? "Currently pinned: {$pinned}\n" : "Nothing pinned yet — run guard:feed-update to fetch a release.\n";
+        return 0;
+    }
+
+    private function feedUpdate(array $argv): int {
+        $feed = new FeedService();
+        $tag = $argv[2] ?? null;
+        if ($tag !== null && str_starts_with($tag, '--')) $tag = null;
+        if (!$tag) {
+            $tag = $feed->latestKnownTag();
+            if (!$tag) {
+                $check = $feed->checkLatest();
+                if (!$check['ok']) { fwrite(STDERR, "Could not determine latest feed release: {$check['error']}\n"); return 1; }
+                $tag = $check['tag'];
+            }
+        }
+        echo "Fetching {$feed->repo()} release {$tag}...\n";
+        $result = $feed->fetchRelease($tag);
+        if (!$result['ok']) { fwrite(STDERR, "Feed update failed: {$result['error']}\n"); return 1; }
+        $s = $result['summary'];
+        echo "Pinned to {$tag}. Incidents: created={$s['created']} updated={$s['updated']}" . (!empty($s['checksum_mismatches']) ? ', REJECTED (checksum mismatch): ' . implode(',', $s['checksum_mismatches']) : '') . "\n";
+        echo "Run guard:feed-list to see what's new, then guard:feed-import {incident_id} to bring one in (lands disabled, pending review).\n";
+        return 0;
+    }
+
+    private function feedList(): int {
+        echo "incident_id\trelease_tag\tseverity\ttitle\timport_status\n";
+        foreach ((new FeedService())->knownIncidents() as $r) {
+            echo "{$r['incident_id']}\t{$r['release_tag']}\t".($r['severity']??'')."\t{$r['title']}\t{$r['import_status']}\n";
+        }
+        return 0;
+    }
+
+    private function feedImport(array $argv): int {
+        $incidentId = $argv[2] ?? null;
+        if (!$incidentId || str_starts_with($incidentId, '--')) throw new \InvalidArgumentException('incident_id is required (see guard:feed-list).');
+        $dryRun = in_array('--dry-run', $argv, true);
+        $result = (new FeedService())->importIncident($incidentId, $dryRun);
+        if (!$result['ok']) { fwrite(STDERR, "Feed import rejected:\n - " . implode("\n - ", $result['errors'] ?? [$result['error'] ?? 'unknown error']) . "\n"); return 1; }
+        $s = $result['summary'];
+        echo ($dryRun ? "[dry-run] " : '') . "Incident {$s['incident_external_id']}: signatures created={$s['signatures']['created']} updated={$s['signatures']['updated']} (all disabled, pending_feed_review) — approve via guard:signature-enable {id} or /signatures.\n";
         return 0;
     }
 

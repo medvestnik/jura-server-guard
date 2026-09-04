@@ -36,8 +36,16 @@ class IncidentImportService
         return $errors;
     }
 
-    /** @return array{ok:bool,errors?:array,dry_run?:bool,summary?:array} */
-    public function import(array $data, bool $dryRun = false, ?string $sourceFile = null): array
+    /**
+     * @param bool $fromFeed When true, every signature this incident brings is forced to
+     *   enabled=0 / review_status='pending_feed_review' regardless of what the incident file
+     *   says — an admin must explicitly approve it (via /signatures or guard:signature-enable)
+     *   before it ever runs live. Plain `guard:incident-import` (fromFeed=false) keeps its
+     *   existing behavior of trusting the file's own `enabled` flag, since that path already
+     *   requires a human to have run --dry-run and reviewed the file first (see docs/SECURITY.md).
+     * @return array{ok:bool,errors?:array,dry_run?:bool,summary?:array}
+     */
+    public function import(array $data, bool $dryRun = false, ?string $sourceFile = null, bool $fromFeed = false, ?string $feedReleaseTag = null): array
     {
         $errors = $this->validate($data);
         if ($errors) return ['ok' => false, 'errors' => $errors];
@@ -77,7 +85,7 @@ class IncidentImportService
                 $this->linkIncident('incident_threat_ip_links', 'threat_ip_id', $incidentId, $threatIpId);
             }
             foreach ((array) ($data['malware_signatures'] ?? []) as $sig) {
-                [$created, $signatureId] = $this->upsertSignature($sig, $incidentId);
+                [$created, $signatureId] = $this->upsertSignature($sig, $incidentId, $source, $fromFeed, $feedReleaseTag);
                 $summary['signatures'][$created ? 'created' : 'updated']++;
                 $this->linkIncident('incident_signature_links', 'signature_id', $incidentId, $signatureId);
             }
@@ -143,10 +151,28 @@ class IncidentImportService
         return [true, DB::insert('INSERT INTO threat_ips (ip,classification,risk,confidence,notes,hit_count,recommended_action,incident_id,source,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', [$ip['ip'], ...$fields, now(), now(), now(), now()])];
     }
 
-    /** @return array{0:bool,1:int} [created, signature_id] */
-    private function upsertSignature(array $sig, int $incidentId): array
+    /**
+     * @return array{0:bool,1:int} [created, signature_id]
+     *
+     * Provenance note: `source` used to be hardcoded to the literal string 'incident' here,
+     * discarding the actual incident id that the JSON file's own `source` field already
+     * carried (e.g. "incident:2026-08-lti-tinyfilemanager-webshell-seo-spam") and the $source
+     * ("incident:<external id>") that import() computes for threat_ips. That made it
+     * impossible to later find/disable "every signature that came from incident X" — which is
+     * exactly what you want after discovering a bad incident file. Now it's threaded through
+     * like threat_ips already does.
+     */
+    private function upsertSignature(array $sig, int $incidentId, string $source, bool $fromFeed = false, ?string $feedReleaseTag = null): array
     {
         $existing = DB::first('SELECT id FROM malware_signatures WHERE slug=?', [$sig['slug']]);
+        $sigSource = is_string($sig['source'] ?? null) && $sig['source'] !== '' ? $sig['source'] : $source;
+        // A feed-sourced signature never goes live on the strength of the incident file alone —
+        // it lands disabled and pending_feed_review no matter what `enabled` says, until an
+        // admin approves it (guard:signature-enable / the Signatures page). A plain
+        // guard:incident-import keeps trusting the file's own `enabled`, since that path
+        // already requires a human to have reviewed a --dry-run first (docs/SECURITY.md).
+        $enabled = $fromFeed ? 0 : (!empty($sig['enabled']) ? 1 : 0);
+        $reviewStatus = $fromFeed ? 'pending_feed_review' : 'approved';
         $fields = [
             $sig['name'],
             $sig['description'] ?? null,
@@ -158,14 +184,24 @@ class IncidentImportService
             json_encode($sig['target_paths'] ?? [], JSON_UNESCAPED_SLASHES),
             json_encode($sig['exclude_paths'] ?? [], JSON_UNESCAPED_SLASHES),
             (int) ($sig['required_hits'] ?? 1),
-            !empty($sig['enabled']) ? 1 : 0,
+            $enabled,
             $incidentId,
+            $sigSource,
+            $reviewStatus,
+            $feedReleaseTag,
         ];
         if ($existing) {
-            DB::statement('UPDATE malware_signatures SET name=?,description=?,risk=?,type=?,pattern_type=?,pattern_json=?,target_extensions=?,target_paths=?,exclude_paths=?,required_hits=?,enabled=?,incident_id=?,source=?,updated_at=? WHERE id=?', [...$fields, 'incident', now(), $existing['id']]);
+            DB::statement('UPDATE malware_signatures SET name=?,description=?,risk=?,type=?,pattern_type=?,pattern_json=?,target_extensions=?,target_paths=?,exclude_paths=?,required_hits=?,enabled=?,incident_id=?,source=?,review_status=?,feed_release_tag=?,updated_at=? WHERE id=?', [...$fields, now(), $existing['id']]);
             return [false, (int) $existing['id']];
         }
-        return [true, DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,target_paths,exclude_paths,required_hits,enabled,incident_id,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$fields[0], $sig['slug'], $fields[1], $fields[2], $fields[3], $fields[4], $fields[5], $fields[6], $fields[7], $fields[8], $fields[9], $fields[10], $fields[11], 'incident', now(), now()])];
+        // slug has no place in $fields (it's the lookup key above, not something we ever
+        // update on conflict) so — same as the pre-existing threat_ips/malware_signatures
+        // pattern in this file — it's spliced in positionally here rather than folded into
+        // $fields.
+        return [true, DB::insert(
+            'INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,target_paths,exclude_paths,required_hits,enabled,incident_id,source,review_status,feed_release_tag,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            [$fields[0], $sig['slug'], $fields[1], $fields[2], $fields[3], $fields[4], $fields[5], $fields[6], $fields[7], $fields[8], $fields[9], $fields[10], $fields[11], $fields[12], $fields[13], $fields[14], now(), now()]
+        )];
     }
 
     /** @return array{0:bool,1:int} [created, file_ioc_id] */

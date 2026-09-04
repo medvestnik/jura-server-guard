@@ -151,8 +151,15 @@ function file_change_filters(): array {
     return [$where ? 'WHERE '.implode(' AND ', $where) : '', $params];
 }
 
-function signature_filters(): array { $w=[]; $p=[]; foreach(['enabled'=>'enabled','risk'=>'risk','type'=>'type','source'=>'source'] as $k=>$c) if(($_GET[$k]??'')!==''){ $w[]="$c=?"; $p[]=$_GET[$k]; } return [$w?'WHERE '.implode(' AND ',$w):'', $p]; }
-if ($path === '/signatures/toggle' && $method==='POST') { DB::statement('UPDATE malware_signatures SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?',[now(),(int)$_POST['id']]); redirect('/signatures'); }
+function signature_filters(): array { $w=[]; $p=[]; foreach(['enabled'=>'enabled','risk'=>'risk','type'=>'type','source'=>'source','review_status'=>'review_status'] as $k=>$c) if(($_GET[$k]??'')!==''){ $w[]="$c=?"; $p[]=$_GET[$k]; } return [$w?'WHERE '.implode(' AND ',$w):'', $p]; }
+if ($path === '/signatures/toggle' && $method==='POST') {
+    // Flipping a pending_feed_review signature to enabled IS the admin's review approval —
+    // record it as approved so it stops showing up as "needs review" on /feed and /signatures.
+    // (Disabling one again, e.g. after finding it too broad, deliberately leaves review_status
+    // alone — that's a judgement call captured in false_positive_notes, not an un-review.)
+    DB::statement("UPDATE malware_signatures SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END, review_status=CASE WHEN enabled=0 AND review_status='pending_feed_review' THEN 'approved' ELSE review_status END, updated_at=? WHERE id=?",[now(),(int)$_POST['id']]);
+    redirect('/signatures');
+}
 if ($path === '/signatures/delete' && $method==='POST') { DB::statement('DELETE FROM malware_signatures WHERE id=?',[(int)$_POST['id']]); redirect('/signatures'); }
 if ($path === '/signatures/duplicate' && $method==='POST') { $r=DB::first('SELECT * FROM malware_signatures WHERE id=?',[(int)$_POST['id']]); if($r) DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,target_paths,exclude_paths,required_hits,enabled,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[$r['name'].' copy',$r['slug'].'-copy-'.time(),$r['description'],$r['risk'],$r['type'],$r['pattern_type'],$r['pattern_json'],$r['target_extensions'],$r['target_paths'],$r['exclude_paths'],$r['required_hits'],0,'manual',now(),now()]); redirect('/signatures'); }
 if ($path === '/signatures/save' && $method==='POST') { $id=(int)($_POST['id']??0); $slug=$_POST['slug'] ?: strtolower(preg_replace('/[^a-z0-9]+/i','-',$_POST['name'])); if($id) DB::statement('UPDATE malware_signatures SET name=?,slug=?,description=?,risk=?,type=?,pattern_type=?,pattern_json=?,source=?,updated_at=? WHERE id=?',[$_POST['name'],$slug,$_POST['description'],$_POST['risk'],$_POST['type'],$_POST['pattern_type'],$_POST['pattern_json'],'manual',now(),$id]); else $id=DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,enabled,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?,?)',[$_POST['name'],$slug,$_POST['description'],$_POST['risk'],$_POST['type'],$_POST['pattern_type'],$_POST['pattern_json'],'[]','manual',now(),now()]); redirect('/signatures/'.$id); }
@@ -444,6 +451,39 @@ if ($path === '/incidents/import' && $method === 'POST') {
     echo view('incidents.import', ['result' => $importResult, 'error' => $importError]);
     exit;
 }
+if ($path === '/feed/check' && $method === 'POST') {
+    $result = (new \App\Modules\Feed\FeedService())->checkLatest();
+    $_SESSION['feed_flash'] = $result['ok']
+        ? ['type' => 'success', 'message' => t('Latest published release: :tag', ['tag' => $result['tag']])]
+        : ['type' => 'danger', 'message' => $result['error']];
+    redirect('/feed');
+}
+if ($path === '/feed/fetch' && $method === 'POST') {
+    $tag = trim((string) ($_POST['tag'] ?? ''));
+    if ($tag === '') { $_SESSION['feed_flash'] = ['type' => 'danger', 'message' => t('Release tag is required.')]; redirect('/feed'); }
+    $result = (new \App\Modules\Feed\FeedService())->fetchRelease($tag);
+    if (!$result['ok']) {
+        $_SESSION['feed_flash'] = ['type' => 'danger', 'message' => $result['error']];
+    } else {
+        $s = $result['summary'];
+        $msg = t('Pinned to :tag. Incidents: :created new, :updated updated.', ['tag' => $tag, 'created' => $s['created'], 'updated' => $s['updated']]);
+        if (!empty($s['checksum_mismatches'])) $msg .= ' ' . t('REJECTED (checksum mismatch): :list', ['list' => implode(', ', $s['checksum_mismatches'])]);
+        $_SESSION['feed_flash'] = ['type' => empty($s['checksum_mismatches']) ? 'success' : 'warning', 'message' => $msg];
+    }
+    redirect('/feed');
+}
+if ($path === '/feed/import' && $method === 'POST') {
+    $incidentId = (string) ($_POST['incident_id'] ?? '');
+    $dryRun = ($_POST['dry_run'] ?? '1') === '1';
+    $result = $incidentId !== '' ? (new \App\Modules\Feed\FeedService())->importIncident($incidentId, $dryRun) : ['ok' => false, 'error' => 'incident_id required'];
+    if (!$result['ok']) {
+        $_SESSION['feed_flash'] = ['type' => 'danger', 'message' => implode('; ', $result['errors'] ?? [$result['error'] ?? 'unknown error'])];
+    } else {
+        $s = $result['summary'];
+        $_SESSION['feed_flash'] = ['type' => 'success', 'message' => ($dryRun ? '[' . t('dry run') . '] ' : '') . t('Signatures: :created new, :updated updated — landed disabled, pending review.', ['created' => $s['signatures']['created'], 'updated' => $s['signatures']['updated']])];
+    }
+    redirect('/feed');
+}
 if ($path === '/scan/active.json') { header('Content-Type: application/json'); echo json_encode(scan_active_context(), JSON_UNESCAPED_SLASHES); exit; }
 if ($path === '/scan/cleanup-stale' && $method==='POST') { $ctx=scan_active_context(); if ($ctx['stale']) { DB::statement("UPDATE scan_runs SET status='completed', finished_at=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated", [now(), 'Marked completed by web cleanup: stale run had reached 100%', now(), 'Cleanup completed stale 100% scan', now()]); DB::statement("UPDATE scan_runs SET status='failed', finished_at=?, error_text=?, updated_at=? WHERE status='running'", [now(), 'Marked failed from web cleanup stale scan', now()]); (new ScanLock())->unlock(true); } redirect('/scan/active'); }
 if ($path === '/scan/force-unlock' && $method==='POST') { $ctx=scan_active_context(); if ($ctx['stale']) (new ScanLock())->unlock(true); redirect('/scan/active'); }
@@ -626,6 +666,7 @@ $data = match ($path) {
  '/rules' => ['rules.index',['rules'=>DB::select('SELECT * FROM rules ORDER BY enabled DESC,risk DESC,name'),'allow'=>DB::select('SELECT * FROM allowlist_rules ORDER BY enabled DESC,name')]],
  '/threat-ips' => ['threat_ips.index',(function() use ($threatIpClassifications) { $ip=trim((string)($_GET['ip']??'')); $existing=$ip!==''?DB::first('SELECT * FROM threat_ips WHERE ip=?',[$ip]):null; $eventId=(int)($_GET['event_id']??0); $event=$eventId?log_event_with_site($eventId,$ip):null; $rows=DB::select('SELECT * FROM threat_ips ORDER BY updated_at DESC'); $evidence=[]; foreach(DB::select('SELECT * FROM threat_ip_evidence ORDER BY detected_at DESC,id DESC') as $e) $evidence[(int)$e['threat_ip_id']][]=$e; return ['ips'=>$rows,'classifications'=>$threatIpClassifications,'prefillIp'=>$ip,'existingIp'=>$existing,'contextEvent'=>$event,'evidenceByIp'=>$evidence]; })()],
  '/trusted-ips' => ['trusted_ips.index',['ips'=>DB::select('SELECT * FROM trusted_ips ORDER BY updated_at DESC')]],
+ '/feed' => ['feed.index',(function(){ $feed=new \App\Modules\Feed\FeedService(); $flash=$_SESSION['feed_flash']??null; unset($_SESSION['feed_flash']); return ['repo'=>$feed->repo(),'pinnedTag'=>$feed->pinnedTag(),'latestKnownTag'=>$feed->latestKnownTag(),'lastCheckedAt'=>$feed->lastCheckedAt(),'lastFetchedAt'=>$feed->lastFetchedAt(),'incidents'=>$feed->knownIncidents(),'pendingSignatures'=>DB::select("SELECT * FROM malware_signatures WHERE review_status='pending_feed_review' ORDER BY id DESC"),'flash'=>$flash]; })()],
  '/incidents' => ['incidents.index',['incidents'=>DB::select("SELECT i.*, (SELECT COUNT(*) FROM incident_threat_ip_links l WHERE l.incident_id=i.id) threat_ips_count, (SELECT COUNT(*) FROM incident_signature_links l WHERE l.incident_id=i.id) signatures_count, (SELECT COUNT(*) FROM incident_file_ioc_links l WHERE l.incident_id=i.id) file_iocs_count FROM incidents i ORDER BY i.imported_at DESC")]],
  '/incidents/import' => ['incidents.import',['result'=>null,'error'=>null]],
  '/settings' => ['settings.index',['settings'=>DB::select('SELECT * FROM settings ORDER BY '.DB::quoteIdentifier('key')),'notificationLog'=>DB::select('SELECT * FROM notifications_log ORDER BY id DESC LIMIT 20'),'telegramTestResult'=>(function(){ $r=$_SESSION['telegram_test_result']??null; unset($_SESSION['telegram_test_result']); return $r; })()]],

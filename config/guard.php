@@ -70,6 +70,10 @@ return [
     'anthropic_enabled' => bool_env('JURA_ANTHROPIC_ENABLED', false),
     'anthropic_api_key' => env_value('JURA_ANTHROPIC_API_KEY', ''),
     'ai_chat_enabled' => bool_env('JURA_AI_CHAT_ENABLED', false),
+    // Public jura-server-guard-signatures-feed repo (or a trusted fork). The panel only ever
+    // fetches a specific, checksum-verified GitHub Release tag from this repo — never the
+    // default branch. See app/Modules/Feed/FeedService.php and docs/FEED.md.
+    'feed_repo' => env_value('JURA_FEED_REPO', 'medvestnik/jura-server-guard-signatures-feed'),
     'auto_quarantine_obvious_shells' => bool_env('JURA_AUTO_QUARANTINE_OBVIOUS_SHELLS', false),
     'backup_integration_enabled' => bool_env('JURA_BACKUP_INTEGRATION_ENABLED', false),
     'backup_provider' => env_value('JURA_BACKUP_PROVIDER', 'disabled'),
