@@ -53,6 +53,7 @@
         <a href="#suspicious-logs">Подозрительные логи</a>
         <a href="#scan-profiles">Профили сканирования</a>
         <a href="#web-scans">Сканирование из панели</a>
+        <a href="#scan-reports">Отчёты проверок</a>
         <a href="#findings">Findings</a>
         <a href="#quarantine">Карантин и restore</a>
         <a href="#backups">ISPmanager backups</a>
@@ -186,7 +187,7 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
           <article class="card"><h3>Sites</h3><p>Количество найденных сайтов. Из карточки удобно перейти к скану конкретного сайта.</p></article>
           <article class="card"><h3>New findings</h3><p>Новые необработанные находки. Приоритет — <code>critical</code> и <code>high</code>.</p></article>
           <article class="card"><h3>Last scan</h3><p>Последний запуск: профиль, статус, длительность, количество файлов и находок.</p></article>
-          <article class="card"><h3>Scan history</h3><p>История ручных и timer-сканов с областью проверки: all sites, user или site.</p></article>
+          <article class="card"><h3>Scan history</h3><p>История ручных и timer-сканов с областью проверки: all sites, user или site. Для завершённых запусков доступен JSON-отчёт.</p></article>
           <article class="card"><h3>Recent suspicious log events</h3><p>Свежие подозрительные HTTP-события из access/error логов с URI, IP и raw details.</p></article>
         </div>
       </section>
@@ -226,6 +227,15 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
         <p>В панели доступны кнопки запуска скана на разных уровнях:</p>
         <ul><li><strong>Dashboard scan buttons</strong> — быстрый scan всех сайтов, обычно <code>fast</code>.</li><li><strong>Site scan button</strong> — проверка одного сайта, когда есть конкретный URI или finding.</li><li><strong>User scan button</strong> — проверка всех сайтов одного пользователя ISPmanager.</li><li><strong>Profile dropdown</strong> — выбор <code>fast</code>, <code>standard</code> или <code>deep</code> перед запуском.</li><li><strong>Active scan/progress</strong> — отображение текущей операции, статуса, прогресса и результата.</li></ul>
         <div class="callout info"><strong>Info.</strong> Concurrent scans ограничены глобальным lock-файлом и статусом running scans. Это защищает сервер от перегрузки диска/CPU и предотвращает конфликтующие изменения в истории файлов и findings.</div>
+      </section>
+
+      <section id="scan-reports" data-title="scan reports json download users scan history ai analysis signatures full paths">
+        <div class="section-heading"><p class="kicker">Scan reports</p><h2>Отчёты проверок</h2></div>
+        <p>Отчёт завершённой проверки можно скачать в JSON и передать специалисту или внешней нейросети для дополнительного анализа:</p>
+        <ul><li><strong>Пользователи → Скачать отчёт</strong> — последний завершённый скан, охватывающий выбранного пользователя.</li><li><strong>Главная → История проверок → Скачать отчёт</strong> — отчёт конкретного запуска и его фактической области: весь сервер, пользователь или сайт.</li></ul>
+        <p>В отчёт входят параметры и полнота скана, счётчики, сайты и их абсолютные пути, полный список связанных находок без ограничения пагинацией, SHA-256 и метаданные файлов, сработавшие правила и сигнатуры, безопасный контекст связанных логов, история карантина и сохранённые AI-резюме.</p>
+        <div class="callout warning"><strong>Защита данных.</strong> Содержимое файлов, raw-строки журналов, значения <code>.env</code>, пароли, ключи и raw-ответы AI-провайдера не экспортируются. Значения распространённых секретных параметров в URI и Referer заменяются на <code>[REDACTED]</code>.</div>
+        <div class="callout info"><strong>Исторические данные.</strong> После установки этой версии каждая находка точно связывается с каждым сканом, в котором она обнаружена. Для старых данных миграция знает только первый и последний зафиксированные сканы находки, поэтому отчёт промежуточной старой проверки может быть неполным.</div>
       </section>
 
       <section id="findings" data-title="findings risk critical high medium low status evidence sha256 size mtime owner permissions">

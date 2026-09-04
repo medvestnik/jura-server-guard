@@ -118,6 +118,7 @@ Spot-check schema changes relevant to the release you're deploying, e.g.:
 DBPASS="$(grep '^DB_PASSWORD=' /opt/jura-server-guard/.env | cut -d= -f2-)"
 mysql -u jsg -p"$DBPASS" jura_server_guard -e "SHOW COLUMNS FROM scan_runs;"
 mysql -u jsg -p"$DBPASS" jura_server_guard -e "SHOW COLUMNS FROM log_events;"
+mysql -u jsg -p"$DBPASS" jura_server_guard -e "SHOW TABLES LIKE 'scan_run_findings';"
 ```
 
 ## 8. Install the timers and restart the panel

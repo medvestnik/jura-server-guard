@@ -700,6 +700,18 @@ php artisan guard:scan-site /var/www/zao/data/www/example.com --profile=deep
 
 The dashboard, sites page, and users page provide scan controls with `fast`, `standard`, and `deep` profile selection. Scan history displays profile, scope, status, scanned files, skipped media, skipped directories, findings, and elapsed time.
 
+Completed scans can be exported as structured JSON reports for offline review or analysis by an
+external AI system. Use **Dashboard → Scan history → Download report** for the scope represented
+by that scan row, or **Users → Download report** for the latest completed scan that covered the
+selected user. Reports contain complete server paths, scan metadata and counters, sites, finding
+details and hashes, matched rules/signatures, related sanitized log context, quarantine history,
+and saved AI summaries. They deliberately exclude file contents, raw log lines, `.env` values,
+credentials, and AI provider raw responses; common secret-like query parameters are redacted.
+
+The `scan_run_findings` relation records exact finding membership for scans performed after this
+feature is installed. During migration, existing data can only be associated with each finding's
+known first and last scan, so reports for older intermediate scans may be incomplete.
+
 ### Stronger malware rules
 
 Fast and standard scans now flag PHP-like files and suspicious `.htaccess`/handler config under validation paths:

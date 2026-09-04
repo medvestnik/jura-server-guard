@@ -1,7 +1,7 @@
 <?php
 function utc_timestamp(string $timestamp): int { return strtotime($timestamp . ' UTC') ?: strtotime($timestamp) ?: time(); }
 require dirname(__DIR__).'/vendor/autoload.php';
-use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Quarantine\BulkFindingActionService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService; use App\Modules\Ai\SignatureSuggestionService; use App\Modules\Ai\ChatService; use App\Modules\Abuse\AbuseReportService; use App\Modules\Firewall\IpBlockService;
+use App\Support\Auth; use App\Support\DB; use App\Support\ScanLock; use App\Modules\Quarantine\QuarantineService; use App\Modules\Quarantine\BulkFindingActionService; use App\Modules\Scanner\ScannerService; use App\Modules\Scanner\SignatureEngine; use App\Modules\Backups\IspmanagerBackupService; use App\Modules\Incidents\IncidentImportService; use App\Modules\Ai\SignatureSuggestionService; use App\Modules\Ai\ChatService; use App\Modules\Abuse\AbuseReportService; use App\Modules\Firewall\IpBlockService; use App\Modules\Reports\ScanReportService;
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 try { DB::pdo(); } catch (Throwable $e) { echo 'Database not initialized. Run php artisan migrate.'; exit; }
@@ -81,8 +81,13 @@ function send_csv(string $filename, array $rows): void {
 function send_json(string $filename, mixed $data): void {
     header('Content-Type: application/json; charset=UTF-8');
     header('Content-Disposition: attachment; filename="'.$filename.'"');
-    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
+}
+function report_filename_part(string $value): string {
+    $value = strtolower(trim($value));
+    $value = preg_replace('/[^a-z0-9._-]+/i', '-', $value) ?? '';
+    return trim($value, '-_.') ?: 'unknown';
 }
 function finding_filters(?array $source = null): array {
     $source = $source ?? $_GET;
@@ -463,6 +468,25 @@ if ($path === '/findings/export.json') {
     }, $rows);
     send_json('findings-export.json', ['format' => 'jura-server-guard-findings-export', 'format_version' => '1.0', 'generated_at' => gmdate('c'), 'hostname' => @gethostname() ?: null, 'filters' => array_filter($_GET), 'count' => count($findings), 'findings' => $findings]);
 }
+if ($path === '/reports/user') {
+    try {
+        $report = (new ScanReportService())->forUser((int)($_GET['user_id'] ?? 0));
+        $user = (string)($report['report_scope']['user']['name'] ?? 'user');
+        send_json('jura-scan-user-'.report_filename_part($user).'-run-'.(int)$report['scan']['id'].'.json', $report);
+    } catch (Throwable $e) {
+        http_response_code(404);
+        send_json('jura-scan-report-error.json', ['error'=>$e->getMessage()]);
+    }
+}
+if ($path === '/reports/scan') {
+    try {
+        $report = (new ScanReportService())->forRun((int)($_GET['run_id'] ?? 0));
+        send_json('jura-scan-'.report_filename_part((string)($report['report_scope']['type'] ?? 'full')).'-run-'.(int)$report['scan']['id'].'.json', $report);
+    } catch (Throwable $e) {
+        http_response_code(404);
+        send_json('jura-scan-report-error.json', ['error'=>$e->getMessage()]);
+    }
+}
 if ($path === '/logs/export.csv') { [$w,$p]=log_filters(); send_csv('log_events.csv', DB::select("SELECT l.id,l.risk,l.event_type,u.name user_name,s.name site_name,l.log_path,l.line_number,l.ip,l.method,l.uri,l.status_code,l.user_agent,l.referer,l.created_at FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id $w ORDER BY l.created_at DESC,l.id DESC LIMIT 50000", $p)); }
 if ($path === '/signatures/create') { echo view('signatures.form',['signature'=>null]); exit; }
 if ($path === '/signatures/create-from-hash') {
@@ -592,7 +616,7 @@ if ($path === '/search') {
 $data = match ($path) {
  '/scan/active' => ['scan.active', ['ctx'=>scan_active_context()]],
  '/' => ['dashboard.index', ['activeScan'=>scan_active_context()['run'],'activeLock'=>scan_active_context()['lock'],'last'=>DB::first('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1'),'users'=>DB::first('SELECT COUNT(*) c FROM users')['c']??0,'sites'=>DB::first('SELECT COUNT(*) c FROM sites')['c']??0,'new'=>DB::first("SELECT COUNT(*) c FROM findings WHERE status='new'")['c']??0,'crit'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='critical' AND status='new'")['c']??0,'high'=>DB::first("SELECT COUNT(*) c FROM findings WHERE risk='high' AND status='new'")['c']??0,'q'=>DB::first("SELECT COUNT(*) c FROM quarantine_items WHERE status='quarantined'")['c']??0,'logs'=>DB::select('SELECT l.*, s.name site_name, s.path site_path FROM log_events l LEFT JOIN sites s ON s.id=l.site_id ORDER BY l.created_at DESC, l.id DESC LIMIT 10'),'threatIps'=>(function(){ $ips=[]; foreach(DB::select('SELECT ip,classification,risk,firewall_status,firewall_error,blocked_at FROM threat_ips') as $r) $ips[$r['ip']]=$r; return $ips; })(),'scanRuns'=>DB::select('SELECT * FROM scan_runs ORDER BY id DESC LIMIT 10')]],
- '/users' => ['users.index',['scanCtx'=>scan_active_context(),'users'=>DB::select('SELECT u.*, COUNT(DISTINCT s.id) sites_count, COUNT(f.id) findings_count, MAX(s.last_scan_at) last_scan_at FROM users u LEFT JOIN sites s ON s.server_user_id=u.id LEFT JOIN findings f ON f.site_id=s.id GROUP BY u.id ORDER BY u.name')]],
+ '/users' => ['users.index',(function(){ $users=DB::select('SELECT u.*, COUNT(DISTINCT s.id) sites_count, COUNT(f.id) findings_count, MAX(s.last_scan_at) last_scan_at FROM users u LEFT JOIN sites s ON s.server_user_id=u.id LEFT JOIN findings f ON f.site_id=s.id GROUP BY u.id ORDER BY u.name'); return ['scanCtx'=>scan_active_context(),'users'=>$users,'reportRuns'=>(new ScanReportService())->latestRunIdsByUser($users)]; })()],
  '/sites' => ['sites.index',['scanCtx'=>scan_active_context(),'sites'=>DB::select('SELECT s.*, u.name user_name, COUNT(f.id) findings_count, MAX(CASE f.risk WHEN "critical" THEN 4 WHEN "high" THEN 3 WHEN "medium" THEN 2 ELSE 1 END) risk_score FROM sites s LEFT JOIN users u ON u.id=s.server_user_id LEFT JOIN findings f ON f.site_id=s.id AND f.status="new" GROUP BY s.id ORDER BY s.path')]],
  '/findings' => ['findings.index',(function(){ [$w,$p]=finding_filters(); $total=(int)(DB::first('SELECT COUNT(*) c FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w, $p)['c'] ?? 0); $pagination=findings_pagination($total); return ['findings'=>DB::select('SELECT f.*, s.name site_name, u.name user_name FROM findings f LEFT JOIN sites s ON s.id=f.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY CASE risk WHEN "critical" THEN 1 WHEN "high" THEN 2 WHEN "medium" THEN 3 ELSE 4 END, f.id DESC'.$pagination['sql'],$p), 'total'=>$total, 'pagination'=>$pagination, 'user_names'=>array_column(DB::select('SELECT DISTINCT name FROM users ORDER BY name'), 'name'), 'types'=>array_column(DB::select('SELECT DISTINCT type FROM findings WHERE type IS NOT NULL AND type<>? ORDER BY type', ['']), 'type')]; })()],
  '/logs' => ['logs.index',(function(){ [$w,$p]=log_filters(); $total=(int)(DB::first('SELECT COUNT(*) c FROM log_events l LEFT JOIN sites s ON s.id=l.site_id '.$w,$p)['c']??0); $pagination=table_pagination($total); $ips=[]; foreach(DB::select('SELECT ip,classification,risk,firewall_status,firewall_error,blocked_at FROM threat_ips') as $r) $ips[$r['ip']]=$r; return ['events'=>DB::select('SELECT l.*, s.name site_name, s.path site_path, u.name user_name FROM log_events l LEFT JOIN sites s ON s.id=l.site_id LEFT JOIN users u ON u.id=s.server_user_id '.$w.' ORDER BY l.created_at DESC, l.id DESC'.$pagination['sql'],$p),'threatIps'=>$ips,'total'=>$total,'pagination'=>$pagination]; })()],
