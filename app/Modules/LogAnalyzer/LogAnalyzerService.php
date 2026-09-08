@@ -76,7 +76,7 @@ class LogAnalyzerService
         $high = ['?delivery','?deploy=true','?_bh_chk','fileloc=','alfa_data','alfacgiapi','authcontrolier.php','access.policy.php','session.manage.php','field.api.php','whewr.php'];
         foreach ($high as $needle) if (str_contains($hay, $needle)) return ['type'=>'malware_http_indicator','risk'=>in_array($needle, ['alfa_data','alfacgiapi','?_bh_chk'])?'critical':'high'];
         if (str_contains($hay, 'loader.php') && str_contains($hay, 'whewr.php?delivery')) return ['type'=>'loader_after_delivery_referrer','risk'=>'high'];
-        if (($p['method'] ?? '') === 'POST' && preg_match('/\.php(\?|$)/i', (string)$p['uri']) && !preg_match('/(wp-admin|administrator|admin|index\.php)/i', (string)$p['uri'])) return ['type'=>'post_unknown_php','risk'=>'medium'];
+        if (($p['method'] ?? '') === 'POST' && preg_match('/\.php(\?|$)/i', (string)$p['uri']) && !preg_match('/(wp-admin|administrator|admin|index\.php|xmlrpc\.php|wp-cron\.php|wp-login\.php|wp-comments-post\.php|wp-trackback\.php)/i', (string)$p['uri'])) return ['type'=>'post_unknown_php','risk'=>'medium'];
         if (str_contains($hay, 'mrz')) return ['type'=>'suspicious_mrz','risk'=>'medium'];
         return null;
     }
