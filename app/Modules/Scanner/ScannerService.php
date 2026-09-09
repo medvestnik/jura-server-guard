@@ -512,7 +512,7 @@ class ScannerService
         $content = ($isPhp || $this->isWebConfig($path) || $this->isValidationPath($path) || $this->isSeoScannable($path)) ? @file_get_contents($path, false, null, 0, config('guard.max_file_read_bytes')) ?: '' : '';
         $loaderEvidence = $this->selfReadingPackedLoaderEvidence($content);
         $allowed = $explicitlyAllowed || ($this->knownFalsePositivePath($path) && !$loaderEvidence);
-        $logIds = $this->relatedLogEventIds($path);
+        $logIds = $this->relatedLogEventIds($path, $site['id'] ?? null);
 
         $engine = new SignatureEngine();
         foreach ($engine->enabledSignatures() as $sig) {
@@ -541,13 +541,14 @@ class ScannerService
         }
         $fnHits = array_values(array_filter($matched, fn($r)=>$r['type']==='suspicious_php'));
         $badHits = array_values(array_filter($matched, fn($r)=>$r['type']==='webshell'));
-        $nameOnly = $fnHits && !$badHits && !$this->suspiciousContent($content) && !$this->suspiciousLocation($path) && !$this->malwareLikeName($path);
-        if ($badHits || count($fnHits) >= 2 || ($fnHits && ($this->suspiciousLocation($path) || $this->malwareLikeName($path)))) {
+        $locationOnlyRisky = $this->suspiciousLocation($path) && !$this->coreCmsSourceTree($path);
+        $nameOnly = $fnHits && !$badHits && !$this->suspiciousContent($content) && !$locationOnlyRisky && !$this->malwareLikeName($path);
+        if ($badHits || count($fnHits) >= 2 || ($fnHits && ($locationOnlyRisky || $this->malwareLikeName($path)))) {
             $risk = $allowed ? 'low' : ($nameOnly ? 'medium' : $this->maxRisk($matched));
             if ($logIds && !$allowed) $risk = $this->raiseRisk($risk);
             $out[] = ['risk'=>$risk, 'type'=>$badHits?'webshell':'suspicious_php', 'rule_key'=>'malware-indicators', 'title'=>$allowed?'Allowlisted suspicious file changed':'Suspicious PHP malware indicators', 'description'=>'Matched combined Jura AV Monitor rules.', 'matched'=>$matched, 'log_ids'=>$logIds];
         }
-        if ($isPhp && is_writable($path) && $this->suspiciousLocation($path)) $out[] = ['risk'=>$allowed?'low':'medium','type'=>'writable_php','rule_key'=>'writable-risky-php','title'=>'Writable PHP in risky directory','description'=>'PHP file is writable inside upload/cache/temp-like path.','matched'=>[], 'log_ids'=>$logIds];
+        if ($isPhp && $this->looselyPermissionedPhp($path) && $this->suspiciousLocation($path)) $out[] = ['risk'=>$allowed?'low':'medium','type'=>'writable_php','rule_key'=>'writable-risky-php','title'=>'Writable PHP in risky directory','description'=>'PHP file has group/world-writable permissions inside upload/cache/temp-like path.','matched'=>[], 'log_ids'=>$logIds];
         if ($change === 'changed' && $this->importantChange($relative)) $out[] = ['risk'=>$allowed?'low':'low','type'=>'cms_integrity','rule_key'=>'important-change','title'=>'CMS/core integrity changed (needs baseline)','description'=>'Core_change is grouped as an integrity warning and needs a trusted baseline before being treated as malware.','matched'=>[], 'log_ids'=>$logIds];
         return $out;
     }
@@ -582,7 +583,7 @@ class ScannerService
         elseif (preg_match('#^[^/]+\.php$#i', $rel) && !preg_match('#^(index|admin|cron|upgrade|api|engine)\.php$#i', $rel)) { $reason = 'Unexpected root PHP file in DLE site'; $risk = 'medium'; }
         if (!$reason) return null;
         if (preg_match('/eval\s*\(|base64_decode\s*\(|gz(inflate|uncompress)\s*\(|file_get_contents\s*\(\s*__FILE__/i', $content)) $risk = 'critical';
-        return ['risk'=>$risk,'type'=>'cms_structure','rule_key'=>'dle-structural-warning','title'=>'DataLife Engine structural warning','description'=>$reason,'matched'=>[['name'=>'dle-structure','risk'=>$risk,'pattern'=>$reason,'snippet'=>$rel]], 'log_ids'=>$this->relatedLogEventIds($path)];
+        return ['risk'=>$risk,'type'=>'cms_structure','rule_key'=>'dle-structural-warning','title'=>'DataLife Engine structural warning','description'=>$reason,'matched'=>[['name'=>'dle-structure','risk'=>$risk,'pattern'=>$reason,'snippet'=>$rel]], 'log_ids'=>$this->relatedLogEventIds($path, $site['id'] ?? null)];
     }
 
     private function isSeoScannable(string $path): bool { return (bool)preg_match('/\.(php|html?|txt)$/i', $path); }
@@ -719,7 +720,59 @@ class ScannerService
     private function importantChange(string $rel): bool { $r=$this->defaultRulesConfig(); foreach (array_merge($r['critical_changes'],$r['important_changes']) as $p) if (fnmatch($p, $rel, FNM_CASEFOLD)) return true; return false; }
     private function maxRisk(array $rules): string { $order=['low'=>1,'medium'=>2,'high'=>3,'critical'=>4]; $risk='low'; foreach($rules as $r) if(($order[$r['risk']]??0)>($order[$risk]??0)) $risk=$r['risk']; return $risk; }
     private function raiseRisk(string $risk): string { return ['low'=>'medium','medium'=>'high','high'=>'critical','critical'=>'critical'][$risk] ?? 'high'; }
-    private function relatedLogEventIds(string $path): array { $base = basename($path); if (!$base) return []; return array_map(fn($r)=>(int)$r['id'], DB::select("SELECT id FROM log_events WHERE uri LIKE ? AND NOT (LOWER(uri) LIKE '%delivery.png%' OR LOWER(uri) IN ('/delivery','/ua/delivery','/ru/delivery')) ORDER BY id DESC LIMIT 20", ['%'.$base.'%'])); }
+    /** Correlate a finding path to recent web-server log hits by basename. Without site scoping this
+     *  matches ANY log line whose URI merely contains the basename anywhere on the whole server/account
+     *  -- for a generic CMS entry-point name like "index.php" (present in virtually every request URI
+     *  across every site) that pulls in completely unrelated traffic from other domains/accounts and
+     *  then raises the finding's risk (see raiseRisk() below) on the strength of that bogus match.
+     *  Scoping to the finding's own site_id (falling back to unattributed NULL-site rows) keeps genuine
+     *  same-site correlation working while dropping cross-site noise. */
+    private function relatedLogEventIds(string $path, ?int $siteId = null): array {
+        $base = basename($path);
+        if (!$base) return [];
+        $sql = "SELECT id FROM log_events WHERE uri LIKE ? AND NOT (LOWER(uri) LIKE '%delivery.png%' OR LOWER(uri) IN ('/delivery','/ua/delivery','/ru/delivery'))";
+        $params = ['%'.$base.'%'];
+        if ($siteId !== null) { $sql .= ' AND (site_id = ? OR site_id IS NULL)'; $params[] = $siteId; }
+        $sql .= ' ORDER BY id DESC LIMIT 20';
+        return array_map(fn($r)=>(int)$r['id'], DB::select($sql, $params));
+    }
+
+    /** A permission-bits check that means what "writable-risky-php" claims to mean. is_writable()
+     *  always returns true for euid 0 regardless of the actual mode bits (root bypasses the standard
+     *  Unix permission check) -- and the scanner runs as root (see docs/SECURITY.md), so the previous
+     *  is_writable($path) call fired unconditionally on every PHP file in a risky location, providing
+     *  no real signal. Checking the group/world write bits directly restores an actionable check: a
+     *  PHP file with loose (0022) permissions in a risky location is a genuine finding; one with normal
+     *  owner-only permissions (644/640/750/755, as ISPmanager per-account files typically have) is not. */
+    private function looselyPermissionedPhp(string $path): bool {
+        $mode = @fileperms($path);
+        return $mode !== false && (bool)($mode & 0022);
+    }
+
+    /** True when a path sits inside a well-known CMS/e-commerce "source code" tree (core libraries,
+     *  vendor dependencies, component/module/plugin source, MVC view templates) where a *.php file
+     *  living under a directory literally named cache/images/tmp/upload is normal, legitimate
+     *  application code -- not user-writable storage. This must only suppress the location-ONLY
+     *  escalation branch of the combined-rule check; genuine content/name-based signals (webshell
+     *  strings, 2+ suspicious-function hits, a malware-like filename) are untouched and still fire
+     *  regardless of location. Confirmed against real false positives on this pattern: Joomla core
+     *  libraries/joomla/cache/*.php and libraries/joomla/image/*.php classes, RSFirewall!'s bundled
+     *  Net_DNS2 Cache/File.php, and standard Joomla MVC view files (default.php, view.html.php). */
+    private function coreCmsSourceTree(string $path): bool {
+        return (bool)preg_match(
+            '#/(libraries|vendor|node_modules)/'
+            . '|/administrator/(components|modules|templates|language)/'
+            . '|/components/com_[^/]+/'
+            . '|/modules/mod_[^/]+/'
+            . '|/plugins/[a-z0-9_]+/[^/]+/'
+            . '|/templates/[^/]+/html/'
+            . '|/system/(library|engine)/'
+            . '|/catalog/(controller|model|language)/'
+            . '|/admin/(controller|model|language)/'
+            . '#ix',
+            $path
+        );
+    }
 
     private function upsertFinding(int $runId, int $siteId, string $path, array $m, array $f): void
     {
