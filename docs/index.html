@@ -295,15 +295,24 @@ wp plugin verify-checksums plugin-slug --path=/path/to/site --allow-root</code><
 /opt/php83/bin/php bin/process-monitor.php --dry-run</code></pre>
       </section>
 
-      <section id="updating" data-title="updating jura server guard git pull rsync migrate composer service monitors">
+      <section id="updating" data-title="updating jura server guard git pull rsync migrate composer service monitors php -l syntax check">
         <div class="section-heading"><p class="kicker">Updating</p><h2>Обновление Jura Server Guard</h2></div>
-        <p>Перед обновлением остановите timer и сервис, подтяните репозиторий, синхронизируйте код в <code>/opt/jura-server-guard</code>, примените миграции и запустите сервис. Если обновление добавляет host-level monitors, после синхронизации запустите <code>bin/install-security-monitors.sh</code>.</p>
+        <p>Перед обновлением остановите timer и сервис, подтяните репозиторий, <strong>синтаксически проверьте каждый изменённый PHP-файл до синхронизации в <code>/opt/jura-server-guard</code></strong> — иначе один файл с ошибкой синтаксиса уронит сервис сразу после перезапуска (<code>Connection refused</code> в SSH-туннеле), синхронизируйте код, при необходимости обновите Composer-зависимости, примените миграции и запустите сервис. Если обновление добавляет host-level monitors, после синхронизации запустите <code>bin/install-security-monitors.sh</code>. Подробный пошаговый чек-лист с бэкапом БД: <a href="https://github.com/medvestnik/jura-server-guard/blob/main/docs/UPDATING.md"><code>docs/UPDATING.md</code></a>.</p>
         <pre><code class="language-bash">systemctl stop jura-server-guard-scan.timer jura-server-guard-logs.timer
 systemctl stop jura-server-guard
 
 cd /root/jura-server-guard
 git fetch --all --prune
 git pull --ff-only
+
+git log --oneline -8
+git diff --name-status HEAD~1..HEAD
+
+# Синтаксическая проверка ДО синхронизации в /opt/jura-server-guard — если что-то
+# сообщит Parse error, остановитесь здесь и не выполняйте rsync ниже.
+git diff --name-only HEAD~1..HEAD | grep '\.php$' | xargs -r -n1 /opt/php83/bin/php -l
+find resources app public config routes rules -name '*.php' -print0 \
+  | xargs -0 -n1 /opt/php83/bin/php -l
 
 rsync -a --delete \
   --exclude='.env' \
@@ -312,6 +321,13 @@ rsync -a --delete \
   /root/jura-server-guard/ /opt/jura-server-guard/
 
 cd /opt/jura-server-guard
+
+# Composer нужен только если composer.json/composer.lock изменились в этом обновлении
+# (rsync исключает vendor/, поэтому сам он его не обновит):
+if [ -x bin/composer.phar ] || command -v composer >/dev/null; then
+  /opt/php83/bin/php "$(command -v composer || echo bin/composer.phar)" install --no-dev --optimize-autoloader
+fi
+
 /opt/php83/bin/php artisan migrate
 
 # Если добавлены или изменены параметры .env, отредактируйте .env и примените их:
@@ -341,7 +357,7 @@ systemctl list-timers 'jura-server-guard-*' --all --no-pager
 ss -ltnp | grep ':8765' || true
 curl -m 10 -I http://127.0.0.1:8765/</code></pre>
         <p>Все три команды <code>systemctl is-active</code> должны вывести <code>active</code>. Первый анализ логов запустится примерно через минуту, файловое сканирование — примерно через две минуты. Оба задания используют общую блокировку, поэтому не запускайте их <code>.service</code> вручную одновременно.</p>
-        <div class="callout tip"><strong>Tip.</strong> Если <code>composer.json</code> и <code>composer.lock</code> не изменились, Composer можно пропустить. Если Composer нужен, определяйте доступный <code>composer</code> или <code>composer.phar</code> на сервере; не полагайтесь на жёсткий путь <code>/root/jura-server-guard/composer.phar</code>.</div>
+        <div class="callout tip"><strong>Tip.</strong> Команда выше с <code>git diff --name-only HEAD~1..HEAD | grep '\.php$'</code> проверяет только изменённые файлы; вторая, полная (<code>find resources app public config routes rules ...</code>) проверяет всё приложение целиком и не пропустит новые каталоги — используйте обе.</div>
       </section>
 
       <section id="troubleshooting" data-title="troubleshooting panel not opening service port scan lock sql timer findings false positives monitors">
