@@ -181,8 +181,14 @@ function assessProcess(array $p, bool $includeInfo): ?array
     $comm = strtolower($p['comm']);
 
     if ($exe !== '' && str_contains($exe, ' (deleted)')) {
-        $reasons[] = 'process executable is deleted on disk';
-        $severity = 'critical';
+        $upgradeReason = describePackageUpgradeArtifact($exeClean, $cmd, (int) $p['pid']);
+        if ($upgradeReason !== null) {
+            $reasons[] = $upgradeReason;
+            $severity = 'low';
+        } else {
+            $reasons[] = 'process executable is deleted on disk';
+            $severity = 'critical';
+        }
     }
     if ($exeClean !== '' && preg_match('#^/(tmp|var/tmp|dev/shm)(/|$)#', $exeClean)) {
         $reasons[] = 'executable runs from temporary memory/disk directory';
@@ -236,6 +242,128 @@ function assessProcess(array $p, bool $includeInfo): ?array
     }
 
     return ['severity' => $severity, 'severity_rank' => severityRank($severity), 'reasons' => array_values(array_unique($reasons))];
+}
+
+/**
+ * A long-lived daemon (containerd-shim-runc-v2, containerd, dockerd, mariadbd, nginx, sshd, ...)
+ * routinely keeps running from an unlinked (deleted) inode of its own binary right after
+ * `dnf/yum update` replaces the file on disk: rpm/dnf unlink the old file and put the new one in
+ * its place, and a process that already had the old file open keeps that inode alive -- it shows
+ * as "(deleted)" until the process itself restarts. That's routine package-manager housekeeping,
+ * not process-hollowing malware -- but only when BOTH of these hold, checked against the live RPM
+ * database rather than a fixed binary allowlist or by parsing `dnf history`/`/var/log/dnf.log`
+ * (fragile: locale/version-dependent formatting, log rotation loses old entries):
+ *   (a) the currently-installed package owning this exact path was installed/upgraded (its RPM
+ *       INSTALLTIME) AFTER this specific process started -- i.e. this process predates the
+ *       upgrade that replaced its own (now-unlinked) binary;
+ *   (b) for containerd-shim-runc-v2 specifically, the cmdline actually looks like a real
+ *       containerd-launched shim invocation, not merely a process that happens to share the path.
+ * Returns null (keep the original critical "deleted" alert) whenever either can't be confirmed --
+ * unowned path, package not upgraded since the process started, RPM unavailable (this check is a
+ * no-op on non-RPM systems), or start/update time unreadable. This only downgrades severity and
+ * adds an explanatory reason; it never fully suppresses the finding, so the process stays visible
+ * for a human to confirm and, if genuinely unrestarted since the upgrade, restart the service for.
+ */
+function describePackageUpgradeArtifact(string $exeClean, string $cmdline, int $pid): ?string
+{
+    if ($exeClean === '') {
+        return null;
+    }
+    if (basename($exeClean) === 'containerd-shim-runc-v2' && !looksLikeContainerdShimInvocation($cmdline)) {
+        return null;
+    }
+    $packageUpdatedAt = packageOwnerUpdateTime($exeClean);
+    if ($packageUpdatedAt === null) {
+        return null;
+    }
+    $startedAt = processStartTime($pid);
+    if ($startedAt === null || $packageUpdatedAt < $startedAt) {
+        return null;
+    }
+    return sprintf(
+        'executable replaced by a package manager update on %s (process predates the update; restart the service/container to apply it)',
+        date('Y-m-d H:i', $packageUpdatedAt)
+    );
+}
+
+function looksLikeContainerdShimInvocation(string $cmdline): bool
+{
+    return (bool) preg_match('#-namespace\s+\S+#', $cmdline)
+        && (bool) preg_match('#-id\s+[0-9a-f]{20,}\b#', $cmdline)
+        && (bool) preg_match('#-address\s+/(run|var/run)/\S*containerd\.sock\b#', $cmdline);
+}
+
+/** Epoch seconds the package currently owning $path was installed/last upgraded, via the live RPM
+ *  database (`rpm -q --qf '%{INSTALLTIME}' -f <path>`), or null when unowned, unreadable, or on a
+ *  non-RPM system (rpm missing) -- callers must treat null as "can't confirm" and fail closed. */
+function packageOwnerUpdateTime(string $path): ?int
+{
+    if (!function_exists('shell_exec')) {
+        return null;
+    }
+    $out = @shell_exec('rpm -q --qf ' . escapeshellarg("%{INSTALLTIME}\n") . ' -f ' . escapeshellarg($path) . ' 2>/dev/null');
+    if (!is_string($out)) {
+        return null;
+    }
+    $latest = null;
+    foreach (explode("\n", trim($out)) as $line) {
+        $line = trim($line);
+        if (ctype_digit($line)) {
+            $ts = (int) $line;
+            $latest = $latest === null ? $ts : max($latest, $ts);
+        }
+    }
+    return $latest;
+}
+
+/** Epoch seconds a process started, derived from /proc/[pid]/stat field 22 (starttime, in clock
+ *  ticks since boot) plus /proc/stat's btime. Parses past the process name field by finding the
+ *  last ")" in the line, since a process name can itself contain spaces or parentheses. */
+function processStartTime(int $pid): ?int
+{
+    $stat = @file_get_contents("/proc/{$pid}/stat");
+    if (!is_string($stat)) {
+        return null;
+    }
+    $rparen = strrpos($stat, ')');
+    if ($rparen === false) {
+        return null;
+    }
+    $fields = preg_split('/\s+/', trim(substr($stat, $rparen + 1))) ?: [];
+    // Fields after ")" start at "state" (field 3 overall); starttime is field 22 overall, index 19 here.
+    if (!isset($fields[19]) || !ctype_digit($fields[19])) {
+        return null;
+    }
+    $boot = systemBootTime();
+    $hz = clockTicksPerSecond();
+    if ($boot === null || $hz <= 0) {
+        return null;
+    }
+    return $boot + intdiv((int) $fields[19], $hz);
+}
+
+function systemBootTime(): ?int
+{
+    $stat = @file_get_contents('/proc/stat');
+    if (!is_string($stat)) {
+        return null;
+    }
+    foreach (explode("\n", $stat) as $line) {
+        if (str_starts_with($line, 'btime ')) {
+            return (int) trim(substr($line, 6));
+        }
+    }
+    return null;
+}
+
+function clockTicksPerSecond(): int
+{
+    static $hz = null;
+    if ($hz !== null) {
+        return $hz;
+    }
+    $out = function_exists('shell_exec') ? trim((string) @shell_exec('getconf CLK_TCK 2>/dev/null')) : '';
+    return $hz = (ctype_digit($out) && (int) $out > 0) ? (int) $out : 100;
 }
 
 function maxSeverity(string $a, string $b): string
