@@ -277,7 +277,9 @@ function describePackageUpgradeArtifact(string $exeClean, string $cmdline, int $
         return null;
     }
     $startedAt = processStartTime($pid);
-    if ($startedAt === null || $packageUpdatedAt < $startedAt) {
+    // Both timestamps only have 1-second resolution, so a tie is not proof the update happened
+    // after the process started -- require it to strictly postdate startup, not just not-predate it.
+    if ($startedAt === null || $packageUpdatedAt <= $startedAt) {
         return null;
     }
     return sprintf(
