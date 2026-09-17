@@ -37,6 +37,12 @@ return [
     'scan_vendor_by_default' => bool_env('JURA_SCAN_VENDOR_BY_DEFAULT', false),
     'max_files_per_site' => (int) env_value('JURA_MAX_FILES_PER_SITE', 200000),
     'max_scan_seconds_per_site' => (int) env_value('JURA_MAX_SCAN_SECONDS_PER_SITE', 300),
+    // Wall-clock budget for the pre-scan "how many files total" estimate, independent of
+    // --max-seconds (which only bounds the real scan and is often not passed at all). Without
+    // this, a --profile=fast run with no --max-seconds on a server with many/large sites could
+    // spend hours walking every eligible file across every site just to produce a display-only
+    // total, with no scan_runs row (and so no progress/heartbeat) until it finished.
+    'estimate_max_seconds' => (int) env_value('JURA_ESTIMATE_MAX_SECONDS', 60),
     'max_file_size_for_hash_mb' => (int) env_value('JURA_MAX_FILE_SIZE_FOR_HASH_MB', 50),
     'hash_all_files' => bool_env('JURA_HASH_ALL_FILES', false),
     'hash_php_files' => bool_env('JURA_HASH_PHP_FILES', true),
