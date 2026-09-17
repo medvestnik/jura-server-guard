@@ -610,4 +610,6 @@ return [
     'REJECTED (checksum mismatch): :list' => 'ОТКЛОНЕНО (не совпала контрольная сумма): :list',
     'Signatures: :created new, :updated updated — landed disabled, pending review.' => 'Сигнатур: новых :created, обновлено :updated — все выключены, на проверке.',
     'dry run' => 'пробный запуск',
+    'Download incident JSON' => 'Скачать JSON инцидента',
+    'Download JSON' => 'Скачать JSON',
 ];
