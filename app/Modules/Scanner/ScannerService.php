@@ -510,6 +510,12 @@ class ScannerService
         $out = []; $isPhp = $this->isPhpLike($path); $explicitlyAllowed = $this->rules->isAllowed($path, $m['sha256']);
         if ($this->newStructuralSuspiciousPath($path)) $out[] = ['risk'=>'critical','type'=>'malicious_structure','rule_key'=>'structural-malicious-directory','title'=>'Suspicious malicious directory structure','description'=>'Path matches known fake CMS/env/404SBG/configCWE/FSS-NPY structure used by nested loaders.','matched'=>[['name'=>'structural-path','risk'=>'critical','pattern'=>'fake CMS/env loader directory','snippet'=>$relative]], 'log_ids'=>[]];
         $content = ($isPhp || $this->isWebConfig($path) || $this->isValidationPath($path) || $this->isSeoScannable($path)) ? @file_get_contents($path, false, null, 0, config('guard.max_file_read_bytes')) ?: '' : '';
+        // A .php-extension file with no PHP opening tag anywhere in it is inert: the PHP engine
+        // outputs it verbatim and executes nothing, regardless of directory or filename, so a
+        // path/filename-only rule match (no content evidence) can't actually be a webshell here.
+        // Confirmed against a real false positive: DataLife Engine's own engine/cache/system/cron.php
+        // is a plain integer timestamp with zero PHP code, but matched "*/cache/*.php" purely on path.
+        $hasPhpOpenTag = stripos($content, '<?php') !== false || stripos($content, '<?=') !== false;
         $loaderEvidence = $this->selfReadingPackedLoaderEvidence($content);
         $allowed = $explicitlyAllowed || ($this->knownFalsePositivePath($path) && !$loaderEvidence);
         $logIds = $this->relatedLogEventIds($path, $site['id'] ?? null);
@@ -536,7 +542,7 @@ class ScannerService
         if ($loaderEvidence) $out[] = ['risk'=>$allowed?'low':'critical','type'=>'packed_loader','rule_key'=>'self-reading-packed-loader','title'=>'Self-reading packed PHP loader','description'=>'Detected eval with gzuncompress/gzinflate, self-reading file_get_contents(__FILE__), and a negative substr offset or appended binary/compressed payload.','matched'=>[$loaderEvidence], 'log_ids'=>$logIds];
         $matched = [];
         foreach ($this->rules->enabledRules() as $r) {
-            $hit = match ($r['pattern_type']) { 'regex' => (bool)@preg_match($r['pattern'], $path), 'path' => fnmatch($r['pattern'], $path, FNM_CASEFOLD) || fnmatch($r['pattern'], basename($path), FNM_CASEFOLD), default => $isPhp && stripos($content, $r['pattern']) !== false };
+            $hit = match ($r['pattern_type']) { 'regex' => $hasPhpOpenTag && (bool)@preg_match($r['pattern'], $path), 'path' => $hasPhpOpenTag && (fnmatch($r['pattern'], $path, FNM_CASEFOLD) || fnmatch($r['pattern'], basename($path), FNM_CASEFOLD)), default => $isPhp && stripos($content, $r['pattern']) !== false };
             if ($hit) $matched[] = $r;
         }
         $fnHits = array_values(array_filter($matched, fn($r)=>$r['type']==='suspicious_php'));
