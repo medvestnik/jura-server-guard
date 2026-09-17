@@ -225,6 +225,14 @@ Do not add excluded IPs to `threat_ips`.
 
 ## 6. `malware_signatures`
 
+> Full field-by-field contract, every `pattern_type`'s complete `pattern_json` shape (including
+> keys not shown below, such as `combo`'s `not`/`required_groups` and `structural`'s
+> multi-extension-spray detector), a machine-checkable JSON Schema, and what the matching engine
+> actually enforces versus what it only stores: see
+> [`docs/SIGNATURE_IMPORT_FORMAT.md`](SIGNATURE_IMPORT_FORMAT.md). This section stays a quick
+> reference for authoring signatures inside an incident file; that document is the canonical
+> source for the signature entry itself.
+
 Canonical fields for every signature:
 
 - `name`

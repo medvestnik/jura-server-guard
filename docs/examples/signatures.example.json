@@ -1,0 +1,99 @@
+[
+  {
+    "name": "Example confirmed shell exact hash",
+    "slug": "example-shell-sha256",
+    "description": "Exact SHA-256 of a confirmed incident shell.",
+    "risk": "critical",
+    "type": "webshell",
+    "pattern_type": "hash",
+    "pattern_json": {
+      "sha256": [
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      ]
+    },
+    "target_extensions": ["php", "phtml", "phar"],
+    "target_paths": [],
+    "exclude_paths": [],
+    "required_hits": 1,
+    "enabled": true,
+    "source": "incident:example-2026-09-17-webshell"
+  },
+  {
+    "name": "Example remote eval loader",
+    "slug": "example-remote-eval-loader",
+    "description": "Reads php://input, decodes/transforms the payload, requests remote content, then evals the response.",
+    "risk": "critical",
+    "type": "webshell",
+    "pattern_type": "combo",
+    "pattern_json": {
+      "all": ["php://input", "curl_exec"],
+      "regex_all": ["/\\beval\\s*(?:\\/\\*.*?\\*\\/\\s*)?\\(/is"],
+      "any": ["base64_decode", "str_rot13", "hex2bin"],
+      "regex_any": ["/\\bunpack\\s*\\(\\s*['\"]H\\*/i"],
+      "not": ["// legitimate-vendor-marker"],
+      "required_groups": [
+        { "min": 2, "any": ["chmod(", "rename(", "unlink(", "fopen("] }
+      ]
+    },
+    "target_extensions": ["php", "phtml", "inc"],
+    "target_paths": [],
+    "exclude_paths": [],
+    "required_hits": 1,
+    "enabled": false,
+    "source": "incident:example-2026-09-17-webshell"
+  },
+  {
+    "name": "Example known malicious request URI",
+    "slug": "example-known-malicious-request",
+    "description": "Request/log-style signature. Left disabled: it targets a URL pattern, not scanner-visible file content, so review before enabling for any content-scan use.",
+    "risk": "high",
+    "type": "malicious_request",
+    "pattern_type": "regex",
+    "pattern_json": {
+      "regex": "#POST\\s+/index\\.php\\?option=com_jce&task=profiles\\.import#i"
+    },
+    "target_extensions": [],
+    "target_paths": [],
+    "exclude_paths": [],
+    "required_hits": 1,
+    "enabled": false,
+    "source": "incident:example-2026-09-17-webshell"
+  },
+  {
+    "name": "Example distinctive marker pair",
+    "slug": "example-distinctive-marker-pair",
+    "description": "Two co-occurring markers unlikely to appear in legitimate code.",
+    "risk": "high",
+    "type": "suspicious_php",
+    "pattern_type": "substring",
+    "pattern_json": {
+      "any": ["distinctive-marker-a", "distinctive-marker-b"],
+      "case_insensitive": true
+    },
+    "target_extensions": ["php", "phtml"],
+    "target_paths": [],
+    "exclude_paths": [],
+    "required_hits": 1,
+    "enabled": true,
+    "source": "incident:example-2026-09-17-webshell"
+  },
+  {
+    "name": "Example multi-extension numeric-ID payload spray",
+    "slug": "example-multi-extension-spray",
+    "description": "Dropper pattern: the same payload written under one numeric filename stem across several case/extension variants in the same directory to survive extension-based execution blocks.",
+    "risk": "critical",
+    "type": "structural",
+    "pattern_type": "structural",
+    "pattern_json": {
+      "filename_stem_pattern": "/^[0-9]{5,}$/",
+      "same_directory_min_extension_variants": 3,
+      "extensions": ["php", "PHP", "phtml", "pht"]
+    },
+    "target_extensions": [],
+    "target_paths": [],
+    "exclude_paths": [],
+    "required_hits": 1,
+    "enabled": true,
+    "source": "incident:example-2026-09-17-webshell"
+  }
+]

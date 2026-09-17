@@ -548,6 +548,12 @@ account and can be cleared from the chat page at any time.
 Canonical incident-file authoring contract: [`docs/INCIDENT_IMPORT_FORMAT.md`](docs/INCIDENT_IMPORT_FORMAT.md).  
 Copyable v1 example: [`docs/examples/incident-v1.example.json`](docs/examples/incident-v1.example.json).
 
+Signature entry deep-dive (the `malware_signatures` array's own JSON contract — field-by-field,
+every `pattern_type`'s `pattern_json` shape, what the matching engine actually enforces versus
+what it only stores): [`docs/SIGNATURE_IMPORT_FORMAT.md`](docs/SIGNATURE_IMPORT_FORMAT.md).  
+Machine-checkable JSON Schema: [`docs/schemas/signature-import.schema.json`](docs/schemas/signature-import.schema.json).  
+Copyable example covering every `pattern_type`: [`docs/examples/signatures.example.json`](docs/examples/signatures.example.json).
+
 > When creating incident JSON manually or with an AI assistant, use the canonical documentation and example above rather than inferring the format only from the runtime validator.
 
 The **Incidents** panel page imports incident reports in the `jura-server-guard-incident`

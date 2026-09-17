@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/medvestnik/jura-server-guard/blob/main/docs/schemas/signature-import.schema.json",
+  "title": "Jura Server Guard malware_signatures entry",
+  "description": "Schema for one entry of a jura-server-guard-incident file's `malware_signatures` array. See docs/SIGNATURE_IMPORT_FORMAT.md for the full authoring contract; this file is the machine-checkable companion, not a replacement for it. Validate with: python3 -m jsonschema -i your-signatures.json docs/schemas/signature-import.schema.json (wrap a bare array of entries as {\"malware_signatures\": [...]} first, or point this schema at one object at a time).",
+  "$defs": {
+    "delimitedRegex": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(.)(?:\\\\.|(?!\\1).)*\\1[a-zA-Z]*$",
+      "description": "A PHP PCRE string WITH delimiters (e.g. \"/eval\\\\s*\\\\(/i\" or, when the pattern itself needs literal slashes, \"#/foo/bar#i\"). SignatureEngine passes this straight to preg_match(); a bare regex body with no delimiters (e.g. \"^[0-9]{5,6}$\") fails silently -- preg_match() emits a warning and returns false, which every caller in SignatureEngine treats as \"did not match\", not as an error. This has already happened in a real incident file: a structural signature's filename_stem_pattern shipped as \"^[0-9]{5,6}$\" instead of \"/^[0-9]{5,6}$/\" and consequently never matched anything."
+    }
+  },
+  "type": "object",
+  "required": ["name", "slug", "risk", "type", "pattern_type", "pattern_json"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable signature name."
+    },
+    "slug": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "description": "Stable machine-readable identifier. This is the upsert key: re-importing a signature with the same slug updates it in place instead of creating a duplicate."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional free-text explanation shown in the panel and used as the default risk_explanation on a match."
+    },
+    "risk": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Free-text finding type, e.g. webshell, structural, suspicious_php. Not an enum at the database level, but consistent naming keeps findings groupable."
+    },
+    "pattern_type": {
+      "type": "string",
+      "enum": ["hash", "combo", "regex", "substring", "structural"]
+    },
+    "pattern_json": {
+      "type": "object",
+      "description": "Shape depends on pattern_type -- see the oneOf branches below and docs/SIGNATURE_IMPORT_FORMAT.md section 4."
+    },
+    "target_extensions": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9]+$" },
+      "description": "Lowercase extensions without a leading dot, e.g. [\"php\",\"phtml\",\"phar\"]. Empty or omitted means every scanned file is a candidate -- the only scoping SignatureEngine::match() actually enforces before running pattern_json against a file."
+    },
+    "target_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Stored and round-tripped for the panel/report, but NOT currently read by SignatureEngine's matching engine. Do not rely on this to scope a signature to specific paths -- use pattern_type: structural (path_regex/directory_names/path_contains) instead."
+    },
+    "exclude_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Same caveat as target_paths: stored, not currently enforced by the matching engine."
+    },
+    "required_hits": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Stored and round-tripped, but NOT currently read by SignatureEngine's matching engine (a match is pass/fail per pattern_type's own rules, not a hit count against this threshold)."
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "Ignored entirely when the import comes from the signatures feed (guard:feed-import) -- a feed-sourced signature always lands enabled=false with review_status=pending_feed_review regardless of this value, until an admin approves it."
+    },
+    "source": {
+      "type": "string",
+      "description": "Defaults to \"incident:<incident.id>\" (or \"feed:<incident.id>\" territory via the feed's own source field) when omitted. Set explicitly if a signature should be attributed differently."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "pattern_type": { "const": "hash" } } },
+      "then": {
+        "properties": {
+          "pattern_json": {
+            "type": "object",
+            "required": ["sha256"],
+            "properties": {
+              "sha256": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "pattern_type": { "const": "regex" } } },
+      "then": {
+        "properties": {
+          "pattern_json": {
+            "type": "object",
+            "required": ["regex"],
+            "properties": {
+              "regex": { "$ref": "#/$defs/delimitedRegex" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "pattern_type": { "const": "substring" } } },
+      "then": {
+        "properties": {
+          "pattern_json": {
+            "type": "object",
+            "anyOf": [
+              { "required": ["any"] },
+              { "required": ["substring"] }
+            ],
+            "properties": {
+              "any": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "substring": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string" },
+                "description": "Legacy alias for `any`. Prefer `any` in newly authored signatures."
+              },
+              "case_insensitive": { "type": "boolean", "description": "Defaults to true." }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "pattern_type": { "const": "combo" } } },
+      "then": {
+        "properties": {
+          "pattern_json": {
+            "type": "object",
+            "minProperties": 1,
+            "properties": {
+              "all": {
+                "type": "array", "items": { "type": "string" },
+                "description": "Every substring here must be present (case-insensitive) for the signature to match."
+              },
+              "regex_all": {
+                "type": "array", "items": { "$ref": "#/$defs/delimitedRegex" },
+                "description": "Every regex here must match."
+              },
+              "any": {
+                "type": "array", "items": { "type": "string" },
+                "description": "At least one of these substrings (or of regex_any, if both given) must match, when either key is present."
+              },
+              "regex_any": {
+                "type": "array", "items": { "$ref": "#/$defs/delimitedRegex" }
+              },
+              "not": {
+                "type": "array", "items": { "type": "string" },
+                "description": "If ANY of these substrings is present, the signature does not match -- a hard exclusion, not weighed against the other keys."
+              },
+              "required_groups": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["min"],
+                  "properties": {
+                    "min": { "type": "integer", "minimum": 1 },
+                    "any": { "type": "array", "items": { "type": "string" } },
+                    "regex_any": { "type": "array", "items": { "$ref": "#/$defs/delimitedRegex" } }
+                  },
+                  "anyOf": [{ "required": ["any"] }, { "required": ["regex_any"] }]
+                },
+                "description": "Each group requires at least `min` hits across its own `any`/`regex_any` lists."
+              }
+            },
+            "not": {
+              "not": {
+                "anyOf": [
+                  { "required": ["all"] },
+                  { "required": ["regex_all"] },
+                  { "required": ["any"] },
+                  { "required": ["regex_any"] },
+                  { "required": ["not"] },
+                  { "required": ["required_groups"] }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "pattern_type": { "const": "structural" } } },
+      "then": {
+        "properties": {
+          "pattern_json": {
+            "type": "object",
+            "minProperties": 1,
+            "properties": {
+              "path_regex": { "$ref": "#/$defs/delimitedRegex", "description": "Matched against the site-relative path." },
+              "directory_names": { "type": "array", "items": { "type": "string" }, "description": "Matches when any of these appears as a whole path segment." },
+              "path_contains": { "type": "array", "items": { "type": "string" }, "description": "Matches when any of these is a plain substring of the relative path." },
+              "require_path_and_content": { "type": "boolean", "description": "When true, BOTH a path signal and a regex_any content match are required. Default (false/omitted): either alone is enough." },
+              "regex_any": { "type": "array", "items": { "$ref": "#/$defs/delimitedRegex" }, "description": "Content-side regex(es); at least one must match the file's content." },
+              "same_directory_min_extension_variants": { "type": "integer", "minimum": 2, "description": "Multi-extension-spray detector: minimum number of sibling files (same stem, different extension) that must exist alongside this file. Requires filename_stem_pattern and extensions to also be set." },
+              "filename_stem_pattern": { "$ref": "#/$defs/delimitedRegex", "description": "The file's basename-without-extension must match this to be considered part of a spray, e.g. \"/^[0-9]{5,}$/\" -- NOT \"^[0-9]{5,}$\" without delimiters." },
+              "extensions": { "type": "array", "items": { "type": "string" }, "minItems": 2, "description": "Candidate extensions checked for sibling files, e.g. [\"php\",\"PHP\",\"phtml\",\"pht\"]." }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
