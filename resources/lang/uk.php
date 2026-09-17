@@ -566,4 +566,6 @@ return [
     'Action failed:' => 'Не вдалося виконати дію:',
     'Back to log event' => 'Повернутися до події журналу',
     'The requested file does not exist inside the site root.' => 'Запитаний файл не існує всередині кореня сайту.',
+    'Download incident JSON' => 'Завантажити JSON інциденту',
+    'Download JSON' => 'Завантажити JSON',
 ];

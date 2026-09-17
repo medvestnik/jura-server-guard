@@ -584,6 +584,15 @@ if (preg_match('#^/findings/(\d+)$#',$path,$m)) {
     echo view('findings.show',['finding'=>$f,'events'=>DB::select('SELECT * FROM log_events WHERE raw_line LIKE ? OR uri LIKE ? ORDER BY id DESC LIMIT 50',['%'.basename($f['path']??'').'%','%'.basename($f['path']??'').'%']),'filePreview'=>safe_finding_preview($f),'elsewhere'=>$elsewhere,'aiSuggestions'=>DB::select('SELECT * FROM signature_suggestions WHERE finding_id=? ORDER BY id DESC',[(int)$m[1]])]);
     exit;
 }
+if (preg_match('#^/incidents/(\d+)/export\.json$#',$path,$m)) {
+    $incident = DB::first('SELECT external_id, raw_json FROM incidents WHERE id=?', [(int)$m[1]]);
+    if (!$incident || !$incident['raw_json']) { http_response_code(404); exit; }
+    $filename = report_filename_part((string)$incident['external_id']).'-incident.json';
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="'.$filename.'"');
+    echo $incident['raw_json'];
+    exit;
+}
 if (preg_match('#^/incidents/(\d+)$#',$path,$m)) {
     $incident = DB::first('SELECT * FROM incidents WHERE id=?', [(int)$m[1]]);
     if (!$incident) { echo view('dashboard.404'); exit; }
