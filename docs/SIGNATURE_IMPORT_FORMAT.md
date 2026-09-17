@@ -122,14 +122,19 @@ that class of mistake before importing.
 ```
 
 All keys are optional individually, but **at least one of `all` / `regex_all` / `any` /
-`regex_any` / `not` / `required_groups` must be present** — `pattern_json` here is a nested
-object, not the fixed-key kind, so a typo'd or unrecognized shape (e.g. authoring
-`{"match": "all", "substrings": [...]}` instead of the real keys) has no way to be caught by
-schema validation of the outer entry alone. `SignatureEngine::matchCombo()` **fails closed** on
-this: an unrecognized shape never matches, rather than the pre-2026-09 behavior of silently
-matching every targeted file server-wide (this exact bug shipped in signatures #221-224 and
-produced tens of thousands of false "critical" findings before it was caught). Always test a
-newly authored `combo` signature with `guard:signature-test` before enabling it.
+`regex_any` / `not` / `required_groups` must be present**. `SignatureEngine::matchCombo()`
+**fails closed** on an unrecognized shape: it never matches, rather than the pre-2026-09
+behavior of silently matching every targeted file server-wide. This is not a one-off — the
+exact same mistake, authoring `{"match": "all", "substrings": [...]}` instead of the real keys,
+has shipped in two unrelated incident files so far: signatures #221-224 (tens of thousands of
+false "critical" findings server-wide before the fail-closed fix existed) and, after the fix, a
+real `sppagebuilder-iconfont-htaccess-handler-hijack` signature that simply never matched
+anything and produced no findings at all — silent in a different way, but just as broken.
+`docs/schemas/signature-import.schema.json` now rejects this specific shape (and the analogous
+`substring` mistake of writing `substrings` instead of `any`/`substring`) at authoring time —
+validate against it, and always additionally test a newly authored `combo` signature with
+`guard:signature-test` before enabling it, since the schema cannot verify the signature detects
+what you intended, only that its shape is well-formed.
 
 Semantics:
 
@@ -220,6 +225,16 @@ must be present together to activate. When active: the file being checked must i
 `extensions`; the engine then checks how many sibling files with the same stem and a different
 extension from `extensions` actually exist in the same directory, and matches only if that
 count is `>= same_directory_min_extension_variants`.
+
+> **`filename_stem_pattern` needs delimiters, same as every other regex field in this
+> document** — this is not a hypothetical mistake. A real incident file authored
+> `"filename_stem_pattern": "^[0-9]{5,6}$"` (no delimiters) instead of `"/^[0-9]{5,6}$/"`.
+> `preg_match()` treats the first character as the delimiter, finds no matching closer, emits a
+> warning, and returns `false` — which `multiExtensionSprayVariants()` treats as "not part of a
+> spray," not as an error. The signature imported without any error and never matched a single
+> file. `docs/schemas/signature-import.schema.json` now rejects this specific shape for every
+> regex-bearing field (`regex`, `regex_all`, `regex_any`, `path_regex`,
+> `filename_stem_pattern`) — validate against it before importing.
 
 ## 5. Testing before you enable a signature
 

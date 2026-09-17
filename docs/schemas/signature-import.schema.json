@@ -3,6 +3,14 @@
   "$id": "https://github.com/medvestnik/jura-server-guard/blob/main/docs/schemas/signature-import.schema.json",
   "title": "Jura Server Guard malware_signatures entry",
   "description": "Schema for one entry of a jura-server-guard-incident file's `malware_signatures` array. See docs/SIGNATURE_IMPORT_FORMAT.md for the full authoring contract; this file is the machine-checkable companion, not a replacement for it. Validate with: python3 -m jsonschema -i your-signatures.json docs/schemas/signature-import.schema.json (wrap a bare array of entries as {\"malware_signatures\": [...]} first, or point this schema at one object at a time).",
+  "$defs": {
+    "delimitedRegex": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(.)(?:\\\\.|(?!\\1).)*\\1[a-zA-Z]*$",
+      "description": "A PHP PCRE string WITH delimiters (e.g. \"/eval\\\\s*\\\\(/i\" or, when the pattern itself needs literal slashes, \"#/foo/bar#i\"). SignatureEngine passes this straight to preg_match(); a bare regex body with no delimiters (e.g. \"^[0-9]{5,6}$\") fails silently -- preg_match() emits a warning and returns false, which every caller in SignatureEngine treats as \"did not match\", not as an error. This has already happened in a real incident file: a structural signature's filename_stem_pattern shipped as \"^[0-9]{5,6}$\" instead of \"/^[0-9]{5,6}$/\" and consequently never matched anything."
+    }
+  },
   "type": "object",
   "required": ["name", "slug", "risk", "type", "pattern_type", "pattern_json"],
   "properties": {
@@ -94,7 +102,7 @@
             "type": "object",
             "required": ["regex"],
             "properties": {
-              "regex": { "type": "string", "minLength": 1 }
+              "regex": { "$ref": "#/$defs/delimitedRegex" }
             }
           }
         }
@@ -137,15 +145,15 @@
                 "description": "Every substring here must be present (case-insensitive) for the signature to match."
               },
               "regex_all": {
-                "type": "array", "items": { "type": "string" },
-                "description": "Every regex here (PHP PCRE, with delimiters, e.g. \"/eval\\\\s*\\\\(/i\") must match."
+                "type": "array", "items": { "$ref": "#/$defs/delimitedRegex" },
+                "description": "Every regex here must match."
               },
               "any": {
                 "type": "array", "items": { "type": "string" },
                 "description": "At least one of these substrings (or of regex_any, if both given) must match, when either key is present."
               },
               "regex_any": {
-                "type": "array", "items": { "type": "string" }
+                "type": "array", "items": { "$ref": "#/$defs/delimitedRegex" }
               },
               "not": {
                 "type": "array", "items": { "type": "string" },
@@ -159,7 +167,7 @@
                   "properties": {
                     "min": { "type": "integer", "minimum": 1 },
                     "any": { "type": "array", "items": { "type": "string" } },
-                    "regex_any": { "type": "array", "items": { "type": "string" } }
+                    "regex_any": { "type": "array", "items": { "$ref": "#/$defs/delimitedRegex" } }
                   },
                   "anyOf": [{ "required": ["any"] }, { "required": ["regex_any"] }]
                 },
@@ -190,13 +198,13 @@
             "type": "object",
             "minProperties": 1,
             "properties": {
-              "path_regex": { "type": "string", "description": "PHP PCRE with delimiters, matched against the site-relative path." },
+              "path_regex": { "$ref": "#/$defs/delimitedRegex", "description": "Matched against the site-relative path." },
               "directory_names": { "type": "array", "items": { "type": "string" }, "description": "Matches when any of these appears as a whole path segment." },
               "path_contains": { "type": "array", "items": { "type": "string" }, "description": "Matches when any of these is a plain substring of the relative path." },
               "require_path_and_content": { "type": "boolean", "description": "When true, BOTH a path signal and a regex_any content match are required. Default (false/omitted): either alone is enough." },
-              "regex_any": { "type": "array", "items": { "type": "string" }, "description": "Content-side regex(es); at least one must match the file's content." },
+              "regex_any": { "type": "array", "items": { "$ref": "#/$defs/delimitedRegex" }, "description": "Content-side regex(es); at least one must match the file's content." },
               "same_directory_min_extension_variants": { "type": "integer", "minimum": 2, "description": "Multi-extension-spray detector: minimum number of sibling files (same stem, different extension) that must exist alongside this file. Requires filename_stem_pattern and extensions to also be set." },
-              "filename_stem_pattern": { "type": "string", "description": "PHP PCRE (with delimiters) the file's basename-without-extension must match to be considered part of a spray, e.g. \"/^[0-9]{5,}$/\"." },
+              "filename_stem_pattern": { "$ref": "#/$defs/delimitedRegex", "description": "The file's basename-without-extension must match this to be considered part of a spray, e.g. \"/^[0-9]{5,}$/\" -- NOT \"^[0-9]{5,}$\" without delimiters." },
               "extensions": { "type": "array", "items": { "type": "string" }, "minItems": 2, "description": "Candidate extensions checked for sibling files, e.g. [\"php\",\"PHP\",\"phtml\",\"pht\"]." }
             }
           }
