@@ -510,6 +510,12 @@ class ScannerService
         $out = []; $isPhp = $this->isPhpLike($path); $explicitlyAllowed = $this->rules->isAllowed($path, $m['sha256']);
         if ($this->newStructuralSuspiciousPath($path)) $out[] = ['risk'=>'critical','type'=>'malicious_structure','rule_key'=>'structural-malicious-directory','title'=>'Suspicious malicious directory structure','description'=>'Path matches known fake CMS/env/404SBG/configCWE/FSS-NPY structure used by nested loaders.','matched'=>[['name'=>'structural-path','risk'=>'critical','pattern'=>'fake CMS/env loader directory','snippet'=>$relative]], 'log_ids'=>[]];
         $content = ($isPhp || $this->isWebConfig($path) || $this->isValidationPath($path) || $this->isSeoScannable($path)) ? @file_get_contents($path, false, null, 0, config('guard.max_file_read_bytes')) ?: '' : '';
+        // A .php-extension file with no PHP opening tag anywhere in it is inert: the PHP engine
+        // outputs it verbatim and executes nothing, regardless of directory or filename, so a
+        // path/filename-only rule match (no content evidence) can't actually be a webshell here.
+        // Confirmed against a real false positive: DataLife Engine's own engine/cache/system/cron.php
+        // is a plain integer timestamp with zero PHP code, but matched "*/cache/*.php" purely on path.
+        $hasPhpOpenTag = stripos($content, '<?php') !== false || stripos($content, '<?=') !== false;
         $loaderEvidence = $this->selfReadingPackedLoaderEvidence($content);
         $allowed = $explicitlyAllowed || ($this->knownFalsePositivePath($path) && !$loaderEvidence);
         $logIds = $this->relatedLogEventIds($path, $site['id'] ?? null);
@@ -536,7 +542,7 @@ class ScannerService
         if ($loaderEvidence) $out[] = ['risk'=>$allowed?'low':'critical','type'=>'packed_loader','rule_key'=>'self-reading-packed-loader','title'=>'Self-reading packed PHP loader','description'=>'Detected eval with gzuncompress/gzinflate, self-reading file_get_contents(__FILE__), and a negative substr offset or appended binary/compressed payload.','matched'=>[$loaderEvidence], 'log_ids'=>$logIds];
         $matched = [];
         foreach ($this->rules->enabledRules() as $r) {
-            $hit = match ($r['pattern_type']) { 'regex' => (bool)@preg_match($r['pattern'], $path), 'path' => fnmatch($r['pattern'], $path, FNM_CASEFOLD) || fnmatch($r['pattern'], basename($path), FNM_CASEFOLD), default => $isPhp && stripos($content, $r['pattern']) !== false };
+            $hit = match ($r['pattern_type']) { 'regex' => $hasPhpOpenTag && (bool)@preg_match($r['pattern'], $path), 'path' => $hasPhpOpenTag && (fnmatch($r['pattern'], $path, FNM_CASEFOLD) || fnmatch($r['pattern'], basename($path), FNM_CASEFOLD)), default => $isPhp && stripos($content, $r['pattern']) !== false };
             if ($hit) $matched[] = $r;
         }
         $fnHits = array_values(array_filter($matched, fn($r)=>$r['type']==='suspicious_php'));
@@ -749,15 +755,26 @@ class ScannerService
         return $mode !== false && (bool)($mode & 0022);
     }
 
-    /** True when a path sits inside a well-known CMS/e-commerce "source code" tree (core libraries,
-     *  vendor dependencies, component/module/plugin source, MVC view templates) where a *.php file
-     *  living under a directory literally named cache/images/tmp/upload is normal, legitimate
-     *  application code -- not user-writable storage. This must only suppress the location-ONLY
-     *  escalation branch of the combined-rule check; genuine content/name-based signals (webshell
-     *  strings, 2+ suspicious-function hits, a malware-like filename) are untouched and still fire
-     *  regardless of location. Confirmed against real false positives on this pattern: Joomla core
-     *  libraries/joomla/cache/*.php and libraries/joomla/image/*.php classes, RSFirewall!'s bundled
-     *  Net_DNS2 Cache/File.php, and standard Joomla MVC view files (default.php, view.html.php). */
+    /** True when a path sits inside a well-known CMS/e-commerce/framework "generated or source
+     *  code" tree (core libraries, vendor dependencies, component/module/plugin source, MVC view
+     *  templates, or a framework's own compiled-artifact cache) where a *.php file living under a
+     *  directory literally named cache/images/tmp/upload is normal, legitimate application
+     *  code/output -- not user-writable storage an attacker dropped a shell into. This must only
+     *  suppress the location-ONLY escalation branch of the combined-rule check; genuine
+     *  content/name-based signals (webshell strings, 2+ suspicious-function hits, a malware-like
+     *  filename) are untouched and still fire regardless of location. Confirmed against real false
+     *  positives on this pattern: Joomla core libraries/joomla/cache/*.php and
+     *  libraries/joomla/image/*.php classes, RSFirewall!'s bundled Net_DNS2 Cache/File.php,
+     *  standard Joomla MVC view files (default.php, view.html.php), and a Laravel app's own
+     *  bootstrap/cache/{config,routes-v7,packages,services,events}.php -- `artisan config:cache`/
+     *  `route:cache` output that matched the generic "cache directory" glob purely on path, with
+     *  zero content analysis, since that glob is itself seeded as a suspicious_php rule matched by
+     *  path rather than content (see RuleRepository::seedDefaults(), rules.suspicious_paths).
+     *  Laravel's
+     *  bootstrap/ and storage/framework/ sit outside the public/ webroot in a standard deployment,
+     *  so files there are not directly HTTP-reachable regardless of extension -- the "writable web
+     *  directory" threat model this heuristic targets doesn't apply the same way it does to a
+     *  flat-docroot WordPress/Joomla-style site. */
     private function coreCmsSourceTree(string $path): bool {
         return (bool)preg_match(
             '#/(libraries|vendor|node_modules)/'
@@ -769,6 +786,8 @@ class ScannerService
             . '|/system/(library|engine)/'
             . '|/catalog/(controller|model|language)/'
             . '|/admin/(controller|model|language)/'
+            . '|/bootstrap/cache/'
+            . '|/storage/framework/(cache|views|sessions|testing)/'
             . '#ix',
             $path
         );
