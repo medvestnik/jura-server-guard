@@ -749,15 +749,26 @@ class ScannerService
         return $mode !== false && (bool)($mode & 0022);
     }
 
-    /** True when a path sits inside a well-known CMS/e-commerce "source code" tree (core libraries,
-     *  vendor dependencies, component/module/plugin source, MVC view templates) where a *.php file
-     *  living under a directory literally named cache/images/tmp/upload is normal, legitimate
-     *  application code -- not user-writable storage. This must only suppress the location-ONLY
-     *  escalation branch of the combined-rule check; genuine content/name-based signals (webshell
-     *  strings, 2+ suspicious-function hits, a malware-like filename) are untouched and still fire
-     *  regardless of location. Confirmed against real false positives on this pattern: Joomla core
-     *  libraries/joomla/cache/*.php and libraries/joomla/image/*.php classes, RSFirewall!'s bundled
-     *  Net_DNS2 Cache/File.php, and standard Joomla MVC view files (default.php, view.html.php). */
+    /** True when a path sits inside a well-known CMS/e-commerce/framework "generated or source
+     *  code" tree (core libraries, vendor dependencies, component/module/plugin source, MVC view
+     *  templates, or a framework's own compiled-artifact cache) where a *.php file living under a
+     *  directory literally named cache/images/tmp/upload is normal, legitimate application
+     *  code/output -- not user-writable storage an attacker dropped a shell into. This must only
+     *  suppress the location-ONLY escalation branch of the combined-rule check; genuine
+     *  content/name-based signals (webshell strings, 2+ suspicious-function hits, a malware-like
+     *  filename) are untouched and still fire regardless of location. Confirmed against real false
+     *  positives on this pattern: Joomla core libraries/joomla/cache/*.php and
+     *  libraries/joomla/image/*.php classes, RSFirewall!'s bundled Net_DNS2 Cache/File.php,
+     *  standard Joomla MVC view files (default.php, view.html.php), and a Laravel app's own
+     *  bootstrap/cache/{config,routes-v7,packages,services,events}.php -- `artisan config:cache`/
+     *  `route:cache` output that matched the generic "cache directory" glob purely on path, with
+     *  zero content analysis, since that glob is itself seeded as a suspicious_php rule matched by
+     *  path rather than content (see RuleRepository::seedDefaults(), rules.suspicious_paths).
+     *  Laravel's
+     *  bootstrap/ and storage/framework/ sit outside the public/ webroot in a standard deployment,
+     *  so files there are not directly HTTP-reachable regardless of extension -- the "writable web
+     *  directory" threat model this heuristic targets doesn't apply the same way it does to a
+     *  flat-docroot WordPress/Joomla-style site. */
     private function coreCmsSourceTree(string $path): bool {
         return (bool)preg_match(
             '#/(libraries|vendor|node_modules)/'
@@ -769,6 +780,8 @@ class ScannerService
             . '|/system/(library|engine)/'
             . '|/catalog/(controller|model|language)/'
             . '|/admin/(controller|model|language)/'
+            . '|/bootstrap/cache/'
+            . '|/storage/framework/(cache|views|sessions|testing)/'
             . '#ix',
             $path
         );
