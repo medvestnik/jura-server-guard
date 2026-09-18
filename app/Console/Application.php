@@ -304,6 +304,12 @@ class Application
         // guard:feed-update land as 'pending_feed_review' (see IncidentImportService::upsertSignature).
         $this->ensureColumn('malware_signatures', 'review_status', $driver === 'mysql' ? "VARCHAR(32) NOT NULL DEFAULT 'approved'" : "TEXT NOT NULL DEFAULT 'approved'");
         $this->ensureColumn('malware_signatures', 'feed_release_tag', $driver === 'mysql' ? 'VARCHAR(64) NULL' : 'TEXT NULL');
+        // source is 'incident:<incident.id>' (see IncidentImportService::upsertSignature) and the
+        // original VARCHAR(32) silently truncated/errored (MySQL strict mode: "Data too long for
+        // column 'source'") on any incident.id longer than 23 chars -- a real, reported failure
+        // ("2026-09-17-grandmarine-51la-dropper-mass-webshell-deployment", 60 chars). Same fix
+        // already applied to threat_ips.source below; mirrored here.
+        if ($driver === 'mysql') { try { DB::pdo()->exec("ALTER TABLE malware_signatures MODIFY source VARCHAR(191) NOT NULL DEFAULT 'manual'"); } catch (\Throwable) {} }
         $this->ensureFileIocSha256Nullable($driver);
         $this->ensureIncidentLinkTables($driver);
         $this->ensureTrustedIpsTable($driver);
