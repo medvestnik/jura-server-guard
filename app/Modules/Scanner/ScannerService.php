@@ -47,8 +47,12 @@ class ScannerService
         $pid = getmypid() ?: null;
         $deadlineAt = $this->deadlineAt($options);
         $options['deadline_at'] = $deadlineAt;
-        $totalEstimated = $this->scanMode($options) === 'changed_only' ? null : $this->estimateTotalFiles($scopeType, $scopeValue, $options);
-        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,pid,total_files_estimated,last_heartbeat_at,progress_message,scan_mode,previous_scan_id,files_scanned,skipped_media,skipped_directories,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$profile,$pid,$totalEstimated,now(),'Starting scan',$scanMode,$previousRunId,now(),now()]);
+        // Create the scan_runs row before the (potentially slow, whole-server) file-count estimate
+        // below, so a running scan is always visible on the dashboard/heartbeat from the moment the
+        // process starts. Previously the estimate ran first with no row, no PID, and no progress
+        // message at all -- on a big/busy server with no --max-seconds passed, that walk had no
+        // timeout of its own and could run for hours looking indistinguishable from a dead process.
+        $runId = DB::insert('INSERT INTO scan_runs (started_at,status,scope_type,scope_value,profile,pid,total_files_estimated,last_heartbeat_at,progress_message,scan_mode,previous_scan_id,files_scanned,skipped_media,skipped_directories,findings_count,findings_new,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,?)', [now(),'running',$scopeType,$scopeValue,$profile,$pid,null,now(),'Starting scan',$scanMode,$previousRunId,now(),now()]);
         $files = 0; $findings = 0;
         $stop = function (string $signal) use (&$runId, &$files, &$findings): void {
             DB::statement('UPDATE scan_runs SET status=?, finished_at=?, files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', ['stopped', now(), $files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $signal, now(), $signal, now(), $runId]);
@@ -59,6 +63,12 @@ class ScannerService
             pcntl_async_signals(true);
             pcntl_signal(SIGTERM, fn() => $stop('Stopped by SIGTERM'));
             pcntl_signal(SIGINT, fn() => $stop('Stopped by SIGINT'));
+        }
+        if ($scanMode !== 'changed_only') {
+            $this->updateRunProgress($runId, 0, 0, null, null, 'Estimating total eligible files', true);
+            $this->progress($options, 'Estimating total eligible files before scanning');
+            $totalEstimated = $this->estimateTotalFiles($runId, $scopeType, $scopeValue, $options);
+            DB::statement('UPDATE scan_runs SET total_files_estimated=?, updated_at=? WHERE id=?', [$totalEstimated, now(), $runId]);
         }
         try {
             $GLOBALS['__guard_scan_run_id'] = $runId;
@@ -235,17 +245,30 @@ class ScannerService
         DB::statement('UPDATE scan_runs SET files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, current_site=?, current_path=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', [$files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $site, $path, now(), $message, now(), $runId]);
     }
 
-    private function estimateTotalFiles(string $scopeType, ?string $scopeValue, array $options): ?int
+    /**
+     * Best-effort pre-scan file count, purely for the dashboard's "estimated total" display --
+     * never lets a slow/huge server block scan visibility. Bounded by its own wall-clock budget
+     * (guard.estimate_max_seconds) independent of --max-seconds, which is frequently not passed
+     * at all and previously left this walk completely unbounded; gives up and returns null
+     * (shown as "unknown") rather than a misleadingly-low partial count. Reports progress via
+     * $runId so the scan_runs row this runs against (created by the caller before calling this)
+     * shows a live PID/heartbeat/current-site instead of not existing at all until this returns.
+     */
+    private function estimateTotalFiles(int $runId, string $scopeType, ?string $scopeValue, array $options): ?int
     {
         try {
             $inv = new InventoryService();
             $sites = match ($scopeType) { 'user' => $inv->refresh($scopeValue, null, $options), 'site' => $inv->refresh(null, $scopeValue, $options), default => $inv->refresh(null, null, $options) };
+            $budgetUntil = time() + max(1, (int) config('guard.estimate_max_seconds'));
             $total = 0;
             foreach ($sites as $site) {
                 if ($this->deadlineReached($options)) { $this->limitReached = true; break; }
+                if (time() >= $budgetUntil) return null;
+                $this->updateRunProgress($runId, 0, 0, $site['name'] ?? null, null, 'Estimating total eligible files');
                 $it = new RecursiveIteratorIterator($this->filteredIterator($site['path'], $options));
                 foreach ($it as $file) {
-                    if ($this->deadlineReached($options)) { $this->limitReached = true; break; }
+                    if ($this->deadlineReached($options)) { $this->limitReached = true; break 2; }
+                    if (time() >= $budgetUntil) return null;
                     if ($file instanceof SplFileInfo && $file->isFile() && !$file->isLink() && $this->shouldScanFile($file->getPathname(), $site['path'], $options)) $total++;
                 }
             }
