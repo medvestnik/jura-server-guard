@@ -58,6 +58,7 @@
         <a href="#quarantine">Карантин и restore</a>
         <a href="#backups">ISPmanager backups</a>
         <a href="#incidents">Сценарии реагирования</a>
+        <a href="#feed">Общий фид сигнатур</a>
         <a href="#cli-reference">CLI reference</a>
         <a href="#updating">Обновление</a>
         <a href="#troubleshooting">Troubleshooting</a>
@@ -274,6 +275,42 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
         <div class="scenario"><h3>Scenario C: packed PHP loader</h3><p>Критическая комбинация: self-reading file <code>file_get_contents(__FILE__)</code>, распаковка через <code>gzuncompress</code>/<code>gzinflate</code>, <code>eval</code> и appended binary/compressed payload. Такие файлы сначала карантинируйте, затем ищите точку загрузки и соседние backdoors.</p></div>
         <div class="scenario"><h3>Scenario D: false positive в легитимных WordPress files</h3><p>Если файл похож на legitimate WordPress core/plugin, проверьте checksums перед карантином:</p><pre><code class="language-bash">wp core verify-checksums --path=/path/to/site --allow-root
 wp plugin verify-checksums plugin-slug --path=/path/to/site --allow-root</code></pre></div>
+      </section>
+
+      <section id="feed" data-title="community signatures feed jura-server-guard-signatures-feed anonymized incidents guard:feed-check guard:feed-update guard:feed-import pending review">
+        <div class="section-heading"><p class="kicker">Community feed</p><h2>Общий фид инцидентов и сигнатур</h2></div>
+        <p>Публичный репозиторий обезличенных отчётов об инцидентах и сигнатур, которые они породили —
+        <a href="https://github.com/medvestnik/jura-server-guard-signatures-feed" target="_blank" rel="noopener">medvestnik/jura-server-guard-signatures-feed</a>.
+        Идея — если на одном сервере подтверждён конкретный webshell/backdoor, любая другая установка Jura Server Guard
+        может проверить себя на него, не переоткрывая ту же угрозу заново.</p>
+        <p>Панель никогда не читает <code>main</code>-ветку фида — только конкретный, зафиксированный GitHub Release по тегу,
+        с проверкой контрольной суммы бандла и каждого файла инцидента внутри него. Сигнатуры, пришедшие из фида,
+        всегда попадают выключенными и со статусом <code>pending_feed_review</code> — ни одна не становится активной,
+        пока администратор не подтвердит её вручную.</p>
+        <pre><code class="language-bash"># проверить, есть ли новый релиз (ничего не скачивает)
+/opt/php83/bin/php artisan guard:feed-check
+
+# скачать и закрепить релиз (проверяет контрольные суммы, ничего не включает)
+/opt/php83/bin/php artisan guard:feed-update
+/opt/php83/bin/php artisan guard:feed-update v2026.09.1
+/opt/php83/bin/php artisan guard:feed-update --yes
+
+# посмотреть, что принёс закреплённый релиз
+/opt/php83/bin/php artisan guard:feed-list
+
+# подтянуть сигнатуры одного инцидента (всегда выключенные, на проверке)
+/opt/php83/bin/php artisan guard:feed-import &lt;incident_id&gt; --dry-run
+/opt/php83/bin/php artisan guard:feed-import &lt;incident_id&gt;
+
+# включить конкретную сигнатуру после ручной проверки
+/opt/php83/bin/php artisan guard:signature-enable &lt;signature_id&gt;</code></pre>
+        <p>То же самое доступно на странице <strong>Фид</strong> в панели: проверка обновлений, закрепление релиза,
+        список принесённых инцидентов, импорт и подтверждение сигнатур, ожидающих проверки.</p>
+        <div class="callout tip"><strong>Свой форк.</strong> Чтобы вести собственный, приватный фид вместо
+        общего — например, обмениваться находками только между своими серверами до решения, публиковать ли их
+        дальше — укажите свой репозиторий в том же формате релизов/бандлов через <code>JURA_FEED_REPO</code> в <code>.env</code>.</div>
+        <p>Подробнее, включая модель доверия и формат релиза/бандла для тех, кто готовит публикацию в фид:
+        <a href="https://github.com/medvestnik/jura-server-guard/blob/main/docs/FEED.md"><code>docs/FEED.md</code></a>.</p>
       </section>
 
       <section id="cli-reference" data-title="cli reference guard status db stats scan logs prune optimize db telegram monitors">
