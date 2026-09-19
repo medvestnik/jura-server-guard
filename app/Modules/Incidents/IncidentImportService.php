@@ -100,6 +100,16 @@ class IncidentImportService
             return ['ok' => false, 'errors' => ['Import failed and was rolled back: ' . $e->getMessage()]];
         }
         $summary['incident_id'] = $incidentId;
+        // Best-effort: stage an anonymized copy for the community feed outbox, but never let a
+        // failure here fail the incident import itself. Never re-contribute something that was
+        // itself just pulled FROM the feed (fromFeed=true), or that's manually re-imported from
+        // an outbox file already sitting in storage/feed-outbox/ (its own id carries the "anon-"
+        // prefix this class generates) -- either way it would just echo community data back at
+        // itself with nothing new to anonymize.
+        if (!$fromFeed && !str_starts_with($extId, 'anon-')) {
+            try { (new \App\Modules\Feed\FeedContributionService())->prepareFromIncident($incidentId); }
+            catch (Throwable) {}
+        }
         return ['ok' => true, 'dry_run' => false, 'summary' => $summary];
     }
 

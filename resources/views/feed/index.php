@@ -76,4 +76,37 @@
   </table>
   <?php endif ?>
 </div>
+
+<div class="card">
+  <h2><?= e(t('Your contributions')) ?></h2>
+  <p class="muted"><?= e(t('After every locally-imported incident, an anonymized copy (signatures, file/path indicators — no site names, paths, or free text) is staged here automatically. It is never sent anywhere on its own: publishing to :repo requires you to click Publish below (creates a public GitHub Release). Review the staged JSON in storage/feed-outbox/ before publishing if in doubt.', ['repo' => $publishRepo])) ?></p>
+  <?php if (!$publishConfigured): ?><p class="muted"><?= e(t('JURA_FEED_PUBLISH_TOKEN is not set — Publish is disabled until a GitHub token with write access to :repo is configured in .env.', ['repo' => $publishRepo])) ?></p><?php endif ?>
+  <?php if (!$outbox): ?>
+    <p class="muted"><?= e(t('Nothing staged yet.')) ?></p>
+  <?php else: ?>
+  <table>
+    <tr><th><?= e(t('Title')) ?></th><th><?= e(t('Severity')) ?></th><th><?= e(t('Signatures')) ?></th><th><?= e(t('File indicators')) ?></th><th><?= e(t('Status')) ?></th><th><?= e(t('Actions')) ?></th></tr>
+    <?php foreach ($outbox as $o): ?>
+    <tr>
+      <td><?= e($o['title']) ?></td>
+      <td><span class="badge <?= e($o['severity'] ?: 'medium') ?>"><?= e(t($o['severity'] ?: 'medium')) ?></span></td>
+      <td><?= (int) $o['signature_count'] ?></td>
+      <td><?= (int) $o['file_ioc_count'] ?></td>
+      <td>
+        <?php if ($o['status'] === 'published'): ?><span class="badge low"><?= e(t('published')) ?></span> <code><?= e($o['release_tag']) ?></code>
+        <?php else: ?><span class="muted"><?= e(t('draft')) ?></span><?php if ($o['publish_error']): ?> <span class="badge critical" title="<?= e($o['publish_error']) ?>"><?= e(t('last attempt failed')) ?></span><?php endif ?>
+        <?php endif ?>
+      </td>
+      <td class="actions-cell">
+        <?php if ($o['status'] !== 'published'): ?>
+        <form method="post" action="/feed/publish" class="inline-form" onsubmit="return confirm(<?= e(json_encode(t('Publish this contribution as a public GitHub Release on :repo? This cannot be undone — other installations will be able to download it.', ['repo' => $publishRepo]))) ?>)"><input type="hidden" name="outbox_id" value="<?= e($o['id']) ?>"><button class="btn small" <?= $publishConfigured ? '' : 'disabled' ?>><?= e(t('Publish')) ?></button></form>
+        <?php else: ?>
+        <span class="muted small"><?= e($o['published_at']) ?></span>
+        <?php endif ?>
+      </td>
+    </tr>
+    <?php endforeach ?>
+  </table>
+  <?php endif ?>
+</div>
 <?php $content=ob_get_clean(); include base_path('resources/views/layouts/app.php'); ?>
