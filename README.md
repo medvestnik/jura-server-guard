@@ -1,6 +1,8 @@
 # Jura Server Guard
 Open-source server security monitoring panel for hosting servers and PHP websites.
 
+Community incidents/signatures feed: [medvestnik/jura-server-guard-signatures-feed](https://github.com/medvestnik/jura-server-guard-signatures-feed) — anonymized incident reports and the malware signatures they produced, shared across every installation. See [`docs/FEED.md`](docs/FEED.md).
+
 Documentation: https://medvestnik.github.io/jura-server-guard/
 
 Local documentation site: `/docs/index.html`

@@ -2,6 +2,7 @@
 namespace App\Console;
 
 use App\Modules\Backups\IspmanagerBackupService;
+use App\Modules\Feed\FeedContributionService;
 use App\Modules\Feed\FeedService;
 use App\Modules\Incidents\IncidentImportService;
 use App\Modules\LogAnalyzer\LogAnalyzerService;
@@ -29,7 +30,7 @@ class Application
                 'guard:sites' => $this->sites(), 'guard:quarantine' => $this->quarantine((int)($argv[2] ?? 0)), 'guard:restore' => $this->restore((int)($argv[2] ?? 0)), 'guard:findings-bulk-action' => $this->bulkFindingsAction((string)($argv[2] ?? '')), 'guard:status' => $this->status(),
                 'guard:ip-list' => $this->ipList(), 'guard:ip-add' => $this->ipAdd($argv), 'guard:ip-remove' => $this->ipRemove($argv), 'guard:find-hash' => $this->findHash($argv),
                 'guard:incident-import' => $this->incidentImport($argv), 'guard:incident-list' => $this->incidentList(),
-                'guard:feed-check' => $this->feedCheck(), 'guard:feed-update' => $this->feedUpdate($argv), 'guard:feed-list' => $this->feedList(), 'guard:feed-import' => $this->feedImport($argv),
+                'guard:feed-check' => $this->feedCheck(), 'guard:feed-update' => $this->feedUpdate($argv), 'guard:feed-list' => $this->feedList(), 'guard:feed-import' => $this->feedImport($argv), 'guard:feed-outbox-list' => $this->feedOutboxList(), 'guard:feed-publish' => $this->feedPublish($argv),
                 'guard:trust-ip' => $this->trustIp($argv), 'guard:untrust-ip' => $this->untrustIp($argv), 'guard:trusted-ips' => $this->trustedIpsList(),
                 'guard:cron-scan' => $this->cronScan(), 'guard:telegram-test' => $this->telegramTest($argv), 'guard:telegram-findings' => $this->telegramFindings($argv),
                 'key:generate','config:cache','package:discover' => $this->noop($cmd), default => $this->help()
@@ -37,7 +38,7 @@ class Application
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: {$e->getMessage()}\n"); return 1; }
     }
 
-    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--include-vendor] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-sweep {signature_id}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  guard:incident-import {path.json} [--dry-run]\n  guard:incident-list\n  guard:feed-check\n  guard:feed-update [tag] [--yes]\n    Without [tag], updates to whatever guard:feed-check last saw as latest (or checks first if never run). --yes skips the confirmation prompt (for cron).\n  guard:feed-list\n  guard:feed-import {incident_id} [--dry-run]\n    Signatures a feed import brings always land disabled/pending_feed_review regardless of --dry-run — approve them via guard:signature-enable or the Signatures page.\n  guard:trust-ip {ip} [--label=TEXT] [--notes=TEXT]\n  guard:untrust-ip {ip}\n  guard:trusted-ips\n  guard:cron-scan\n  guard:telegram-test [--message=TEXT]\n  guard:telegram-findings [scan_run_id]\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
+    private function help(?string $cmd = null): int { echo "Jura Server Guard artisan commands:\n  guard:scan [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--include-old] [--include-storage] [--include-backups] [--include-vendor] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-user {user} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n  guard:scan-site {path} [--profile=fast|standard|deep] [--diff|--changed-only|--full-rescan|--paranoid] [--force] [--no-lock] [--max-files=N] [--max-seconds=N] [--dry-run] [--include-logs] [--skip-logs]\n    Log defaults: fast and changed-only skip logs; standard includes limited log analysis; deep includes log analysis. Use --include-logs to force logs or --skip-logs to suppress them.\n  guard:signature-list\n  guard:signature-test {signature_id} {file_path}\n  guard:signature-sweep {signature_id}\n  guard:signature-suggest {finding_id}\n  guard:signature-enable {signature_id}\n  guard:signature-disable {signature_id}\n  guard:sites\n  guard:logs [--force] [--no-lock]\n  guard:scan-active\n  guard:scan-unlock [--force]\n  guard:cleanup-running-scans [--hours=2]\n  guard:prune [--days=30]\n  guard:db-stats\n  guard:optimize-db\n  guard:quarantine {finding_id}\n  guard:restore {quarantine_id}\n  guard:status\n  guard:ip-list\n  guard:ip-add {ip} [--classification=scanner|bruteforce|webshell_access|bot|direct_login|manual|unknown] [--risk=low|medium|high|critical] [--notes=TEXT]\n  guard:ip-remove {ip}\n  guard:find-hash {sha256}\n  guard:incident-import {path.json} [--dry-run]\n  guard:incident-list\n  guard:feed-check\n  guard:feed-update [tag] [--yes]\n    Without [tag], updates to whatever guard:feed-check last saw as latest (or checks first if never run). --yes skips the confirmation prompt (for cron).\n  guard:feed-list\n  guard:feed-import {incident_id} [--dry-run]\n    Signatures a feed import brings always land disabled/pending_feed_review regardless of --dry-run — approve them via guard:signature-enable or the Signatures page.\n  guard:feed-outbox-list\n    Lists anonymized contributions auto-staged after each local guard:incident-import, and whether each has been published yet.\n  guard:feed-publish {outbox_id}\n    Publishes one staged contribution as a new GitHub Release in guard.feed_publish_repo — requires JURA_FEED_PUBLISH_TOKEN. Never automatic; always an explicit step.\n  guard:trust-ip {ip} [--label=TEXT] [--notes=TEXT]\n  guard:untrust-ip {ip}\n  guard:trusted-ips\n  guard:cron-scan\n  guard:telegram-test [--message=TEXT]\n  guard:telegram-findings [scan_run_id]\n  migrate\n  serve --host=127.0.0.1 --port=8765\n"; return 0; }
     private function noop(string $cmd): int { if ($cmd==='key:generate') $this->ensureKey(); echo "$cmd complete.\n"; return 0; }
     private function ensureKey(): void { $env=base_path('.env'); if (!is_file($env) && is_file(base_path('.env.example'))) copy(base_path('.env.example'), $env); if (is_file($env)) { $c=file_get_contents($env); if (preg_match('/^APP_KEY=\s*$/m',$c)) file_put_contents($env,preg_replace('/^APP_KEY=\s*$/m','APP_KEY=base64:'.base64_encode(random_bytes(32)),$c)); } }
 
@@ -326,6 +327,24 @@ class Application
             DB::pdo()->exec("CREATE TABLE IF NOT EXISTS feed_incidents (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, incident_id VARCHAR(191) NOT NULL, release_tag VARCHAR(64) NOT NULL, file_path VARCHAR(255) NOT NULL, sha256 CHAR(64) NOT NULL, title VARCHAR(255) NULL, severity VARCHAR(32) NULL, signature_slugs_json LONGTEXT NULL, import_status VARCHAR(32) NOT NULL DEFAULT 'not_imported', imported_at DATETIME NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_feed_incidents_incident_id(incident_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         } else {
             DB::pdo()->exec("CREATE TABLE IF NOT EXISTS feed_incidents (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id TEXT NOT NULL UNIQUE, release_tag TEXT NOT NULL, file_path TEXT NOT NULL, sha256 TEXT NOT NULL, title TEXT NULL, severity TEXT NULL, signature_slugs_json TEXT NULL, import_status TEXT NOT NULL DEFAULT 'not_imported', imported_at TEXT NULL, created_at TEXT, updated_at TEXT)");
+        }
+        $this->ensureFeedOutboxTable($driver);
+    }
+
+    /**
+     * feed_outbox: locally-staged, already-anonymized contributions prepared automatically after
+     * every non-dry-run guard:incident-import (see FeedContributionService::prepareFromIncident(),
+     * called from IncidentImportService::import()). Nothing here ever leaves the server on its
+     * own -- a draft only gets published (a new GitHub Release created in the feed repo) via an
+     * explicit `guard:feed-publish {outbox_id}` or the Feed page's Publish button, mirroring the
+     * existing pull-side philosophy that nothing crosses a trust boundary without a human step.
+     */
+    private function ensureFeedOutboxTable(string $driver): void
+    {
+        if ($driver === 'mysql') {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS feed_outbox (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, source_incident_id BIGINT UNSIGNED NULL, anon_incident_id VARCHAR(191) NOT NULL, title VARCHAR(255) NOT NULL, severity VARCHAR(32) NOT NULL, signature_count INT NOT NULL DEFAULT 0, file_ioc_count INT NOT NULL DEFAULT 0, status VARCHAR(32) NOT NULL DEFAULT 'draft', file_path VARCHAR(255) NOT NULL, sha256 CHAR(64) NOT NULL, release_tag VARCHAR(64) NULL, publish_error TEXT NULL, published_at DATETIME NULL, created_at DATETIME NULL, updated_at DATETIME NULL, UNIQUE KEY uniq_feed_outbox_anon_id(anon_incident_id), UNIQUE KEY uniq_feed_outbox_source(source_incident_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        } else {
+            DB::pdo()->exec("CREATE TABLE IF NOT EXISTS feed_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, source_incident_id INTEGER NULL, anon_incident_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, severity TEXT NOT NULL, signature_count INTEGER NOT NULL DEFAULT 0, file_ioc_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'draft', file_path TEXT NOT NULL, sha256 TEXT NOT NULL, release_tag TEXT NULL, publish_error TEXT NULL, published_at TEXT NULL, created_at TEXT, updated_at TEXT, UNIQUE(source_incident_id))");
         }
     }
 
@@ -628,6 +647,23 @@ class Application
         if (!$result['ok']) { fwrite(STDERR, "Feed import rejected:\n - " . implode("\n - ", $result['errors'] ?? [$result['error'] ?? 'unknown error']) . "\n"); return 1; }
         $s = $result['summary'];
         echo ($dryRun ? "[dry-run] " : '') . "Incident {$s['incident_external_id']}: signatures created={$s['signatures']['created']} updated={$s['signatures']['updated']} (all disabled, pending_feed_review) — approve via guard:signature-enable {id} or /signatures.\n";
+        return 0;
+    }
+
+    private function feedOutboxList(): int {
+        echo "outbox_id\tsource_incident_id\tstatus\trelease_tag\tsignatures\tfile_iocs\ttitle\n";
+        foreach ((new FeedContributionService())->listOutbox() as $r) {
+            echo "{$r['id']}\t" . ($r['source_incident_id'] ?? '-') . "\t{$r['status']}\t" . ($r['release_tag'] ?? '-') . "\t{$r['signature_count']}\t{$r['file_ioc_count']}\t{$r['title']}\n";
+        }
+        return 0;
+    }
+
+    private function feedPublish(array $argv): int {
+        $outboxId = (int) ($argv[2] ?? 0);
+        if (!$outboxId) throw new \InvalidArgumentException('outbox_id is required (see guard:feed-outbox-list).');
+        $result = (new FeedContributionService())->publish($outboxId);
+        if (!$result['ok']) { fwrite(STDERR, "Publish failed: {$result['error']}\n"); return 1; }
+        echo "Published as release {$result['tag']}" . ($result['html_url'] ? " ({$result['html_url']})" : '') . "\n";
         return 0;
     }
 

@@ -80,6 +80,15 @@ return [
     // fetches a specific, checksum-verified GitHub Release tag from this repo — never the
     // default branch. See app/Modules/Feed/FeedService.php and docs/FEED.md.
     'feed_repo' => env_value('JURA_FEED_REPO', 'medvestnik/jura-server-guard-signatures-feed'),
+    // Contribution (push) side of the feed: after every locally-authored, non-dry-run
+    // guard:incident-import, an anonymized (structural data only -- no site/server identifiers,
+    // no free-text summary/notes) contribution is staged in feed_outbox automatically. It is
+    // NEVER published on its own -- publishing (creating a GitHub Release in the repo below)
+    // requires an explicit `guard:feed-publish {outbox_id}` or the Feed page's Publish button, and
+    // requires a token with write access to that repo. See app/Modules/Feed/FeedContributionService.php
+    // and docs/FEED.md.
+    'feed_publish_repo' => env_value('JURA_FEED_PUBLISH_REPO', env_value('JURA_FEED_REPO', 'medvestnik/jura-server-guard-signatures-feed')),
+    'feed_publish_token' => env_value('JURA_FEED_PUBLISH_TOKEN', ''),
     'auto_quarantine_obvious_shells' => bool_env('JURA_AUTO_QUARANTINE_OBVIOUS_SHELLS', false),
     'backup_integration_enabled' => bool_env('JURA_BACKUP_INTEGRATION_ENABLED', false),
     'backup_provider' => env_value('JURA_BACKUP_PROVIDER', 'disabled'),
