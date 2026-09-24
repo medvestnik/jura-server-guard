@@ -191,13 +191,16 @@ through the rest of the site.
 **Is the first scan always slow, and do repeat scans just check hashes?** Yes to both. A
 site's very first scan has to walk and hash everything not excluded, since there is no prior
 baseline to diff against — but with the exclusions above, "everything" no longer includes
-your dependencies. Every scan after that is `differential` by default (no flag needed): a
-file is only re-hashed and re-analyzed if its size, mtime, permissions, or owner changed since
-last time; unchanged files reuse their previously recorded hash. For an even lighter repeat
-check (e.g. a very frequent timer), `--changed-only` skips media files entirely and does the
-minimum analysis needed. `--full-rescan` forces every file to be re-hashed regardless of
-metadata (useful occasionally to catch a change that fakes its mtime, but not something you'd
-want on every run).
+your dependencies. What happens on repeat scans depends on the profile: `--profile=fast`
+(the recurring timer's default) always runs in `changed_only` mode — one manifest pass over
+the whole site, compared by hash against the last completed scan, with content analysis only
+for what's actually new or modified; if the site-wide manifest hash hasn't moved at all, the
+site is skipped entirely, no per-file work. `--profile=standard` defaults to `differential`
+instead: a file is only re-hashed and re-analyzed if its size, mtime, permissions, or owner
+changed since last time, but every file is still visited to check. Either mode can be forced
+on any profile via `--changed-only` or `--diff`. `--full-rescan` forces every file to be
+re-hashed regardless of metadata (useful occasionally to catch a change that fakes its mtime,
+but not something you'd want on every run).
 
 **Running the first (slow) scan in the background:** starting a scan from the web panel
 already runs it as a detached background process — closing the browser tab does not stop it,

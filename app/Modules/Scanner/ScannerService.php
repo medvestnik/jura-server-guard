@@ -9,7 +9,6 @@ use App\Modules\Rules\RuleRepository;
 use App\Support\DB;
 use App\Support\ScanLock;
 use App\Modules\Scanner\SignatureEngine;
-use App\Modules\Scanner\CmsDetector;
 use AppendIterator;
 use ArrayIterator;
 use FilesystemIterator;
@@ -127,8 +126,6 @@ class ScannerService
         $maxFiles = (int)($options['max_files'] ?? config('guard.max_files_per_site'));
         $maxSeconds = (int)($options['max_seconds'] ?? config('guard.max_scan_seconds_per_site'));
         $dryRun = (bool)($options['dry_run'] ?? false);
-        $cms = $this->detectCmsForSite($site);
-        $site = array_merge($site, ['cms_type'=>$cms['type'], 'cms_version'=>$cms['version'], 'cms_confidence'=>$cms['confidence']]);
         $this->progress($options, "Scanning files for site {$site['name']} ({$site['path']})");
         $this->updateRunProgress($runId, $baseFiles, $baseFindings, $site['name'] ?? null, $site['path'] ?? null, "Scanning files", true);
         $it = $this->orderedIterator($site['path'], $options);
@@ -166,8 +163,6 @@ class ScannerService
     {
         $siteStart = microtime(true); $t = ['inventory_time'=>0,'manifest_compare_time'=>0,'diff_time'=>0,'candidate_selection_time'=>0,'content_scan_time'=>0,'finalize_time'=>0];
         $findings = 0; $dryRun = (bool)($options['dry_run'] ?? false);
-        $cms = $this->detectCmsForSite($site);
-        $site = array_merge($site, ['cms_type'=>$cms['type'], 'cms_version'=>$cms['version'], 'cms_confidence'=>$cms['confidence']]);
         $this->progress($options, "Scanning files for site {$site['name']} ({$site['path']})");
         $this->updateRunProgress($runId, $baseFiles, $baseFindings, $site['name'] ?? null, $site['path'] ?? null, 'Building fast site manifest', true);
 
@@ -519,7 +514,7 @@ class ScannerService
     private function mustAnalyzeChangedOnly(string $path, string $root, string $rel, array $options = []): bool { if (!empty($options['force_paths']) && in_array($path, (array)$options['force_paths'], true)) return true; if ($this->newStructuralSuspiciousPath($path)) return true; return isset(($this->highRiskFindingPathHashes ??= $this->loadHighRiskFindingPathHashes())[hash('sha256',$path)]); }
     private function paranoidRecheckCandidate(string $path, string $rel): bool { return $this->isValidationPath($path) || $this->isRootCriticalFile($rel) || $this->isWebConfig($path) || $this->highRiskPath($path); }
     private function metadataUnchanged(array $row, array $m): bool { foreach (['size','mtime','ctime','mode','uid','gid'] as $k) if ((string)($row[$k] ?? '') !== (string)($m[$k] ?? '')) return false; if (!empty($row['inode']) && !empty($m['inode']) && (string)$row['inode'] !== (string)$m['inode']) return false; return true; }
-    private function scanMode(array $options): string { $profile=$this->profile($options); if (!empty($options['full_rescan'])) return 'full'; if (!empty($options['changed_only'])) return 'changed_only'; if (!empty($options['diff'])) return 'differential'; return $profile === 'deep' ? 'full' : 'differential'; }
+    private function scanMode(array $options): string { $profile=$this->profile($options); if (!empty($options['full_rescan'])) return 'full'; if (!empty($options['changed_only'])) return 'changed_only'; if (!empty($options['diff'])) return 'differential'; return match ($profile) { 'deep' => 'full', 'fast' => 'changed_only', default => 'differential' }; }
     private function previousRunId(string $scopeType, ?string $scopeValue): ?int { $sql = $scopeValue === null ? "SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND scope_type=? AND scope_value IS NULL ORDER BY id DESC LIMIT 1" : "SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND scope_type=? AND scope_value=? ORDER BY id DESC LIMIT 1"; $params = $scopeValue === null ? [$scopeType] : [$scopeType,$scopeValue]; $r=DB::first($sql, $params); return $r ? (int)$r['id'] : null; }
     private function accountDiff(string $change): void { $this->diffStats['files_seen_total']++; if ($change==='new') { $this->diffStats['files_new']++; $this->diffStats['files_changed_total']++; } elseif ($change==='changed') { $this->diffStats['files_modified']++; $this->diffStats['files_changed_total']++; } }
     private function fileCategory(string $path, string $rel): string { if ($this->isPhpLike($path)) return 'php'; if ($this->isWebConfig($path)) return 'config'; if ($this->isOrdinaryMedia($path)) return 'media'; return strtolower(pathinfo($path, PATHINFO_EXTENSION) ?: 'other'); }
@@ -891,13 +886,6 @@ class ScannerService
         if ($this->profile($options) === 'fast') return 'Skipping log analysis for fast scan';
         if ($this->scanMode($options) === 'changed_only') return 'Skipping log analysis for changed-only scan';
         return 'Skipping log analysis';
-    }
-
-    private function detectCmsForSite(array $site): array
-    {
-        $cms = (new CmsDetector())->detect($site['path']);
-        DB::statement('UPDATE sites SET cms_type=?, cms_version=?, cms_detected_at=?, cms_confidence=?, cms_admin_path=?, cms_notes=?, updated_at=? WHERE id=?', [$cms['type'],$cms['version'],now(),$cms['confidence'],$cms['admin_path'],$cms['notes'],now(),$site['id']]);
-        return $cms;
     }
 
     private function progress(array $options, string $message): void

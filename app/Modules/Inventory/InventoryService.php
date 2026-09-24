@@ -1,6 +1,7 @@
 <?php
 namespace App\Modules\Inventory;
 
+use App\Modules\Scanner\CmsDetector;
 use App\Support\DB;
 
 class InventoryService
@@ -49,10 +50,13 @@ class InventoryService
     }
     private function upsertSite(int $userId, string $name, string $path, string $type): array
     {
-        $cms = $this->detectCms($path);
+        $cms = (new CmsDetector())->detect($path);
         $row = DB::first('SELECT id FROM sites WHERE path = ?', [$path]);
-        if ($row) { DB::statement('UPDATE sites SET server_user_id=?, name=?, type=?, cms_type=?, is_active=1, updated_at=? WHERE id=?', [$userId,$name,$type,$cms,now(),$row['id']]); return DB::first('SELECT * FROM sites WHERE id=?', [$row['id']]); }
-        $id = DB::insert('INSERT INTO sites (server_user_id,name,path,type,cms_type,is_active,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?)', [$userId,$name,$path,$type,$cms,now(),now()]);
+        if ($row) {
+            DB::statement('UPDATE sites SET server_user_id=?, name=?, type=?, cms_type=?, cms_version=?, cms_detected_at=?, cms_confidence=?, cms_admin_path=?, cms_notes=?, is_active=1, updated_at=? WHERE id=?', [$userId,$name,$type,$cms['type'],$cms['version'],now(),$cms['confidence'],$cms['admin_path'],$cms['notes'],now(),$row['id']]);
+            return DB::first('SELECT * FROM sites WHERE id=?', [$row['id']]);
+        }
+        $id = DB::insert('INSERT INTO sites (server_user_id,name,path,type,cms_type,cms_version,cms_detected_at,cms_confidence,cms_admin_path,cms_notes,is_active,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)', [$userId,$name,$path,$type,$cms['type'],$cms['version'],now(),$cms['confidence'],$cms['admin_path'],$cms['notes'],now(),now()]);
         return DB::first('SELECT * FROM sites WHERE id=?', [$id]);
     }
     public function classify(string $path): string
@@ -61,13 +65,5 @@ class InventoryService
         return match (true) {
             str_contains($n, 'dubl') || str_contains($n, 'дубл') => 'dubl', str_contains($n, 'backup') || str_contains($n, 'bak') => 'backup', str_starts_with($n, 'old.') || str_contains($n, 'old') => 'old', str_contains($n, 'dev') || str_contains($n, 'test') => 'dev', str_contains($n, 'storage') => 'storage', preg_match('/^[a-z0-9.-]+\.[a-z]{2,}$/i', $n) => str_count($n, '.') > 1 ? 'subdomain' : 'domain', preg_match('/[^a-z0-9._-]/i', $n) || strlen($n) > 40 => 'suspicious', default => 'unknown'
         };
-    }
-    private function detectCms(string $path): ?string
-    {
-        if (is_file($path.'/wp-config.php')) return 'wordpress';
-        if (is_file($path.'/configuration.php')) return 'joomla';
-        if (is_file($path.'/engine/engine.php') || is_file($path.'/engine/init.php') || (is_dir($path.'/engine/data') && is_dir($path.'/templates'))) return 'dle';
-        if (is_file($path.'/config.php') && is_file($path.'/admin/config.php')) return 'opencart';
-        return null;
     }
 }
