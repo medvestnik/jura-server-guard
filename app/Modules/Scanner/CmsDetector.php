@@ -18,6 +18,11 @@ class CmsDetector
             return $this->result('dle', $version, min(98, $confidence), $admin, $notes);
         }
         if ($has('system/startup.php') || ($has('catalog') && $has('system') && $has('index.php'))) return $this->result('opencart', $this->openCartVersion($root), 85, $has('admin/config.php')?'admin':null, 'OpenCart structure detected'.($this->openCartVersion($root) ? '' : ', version unknown'));
+        $laravelRoot = $this->laravelRoot($root);
+        if ($laravelRoot !== null) {
+            $notes = $laravelRoot === $root ? 'Laravel structure detected' : 'Laravel structure detected one level above the site\'s document root (public/)';
+            return $this->result('laravel', $this->laravelVersion($laravelRoot), 90, null, $notes);
+        }
         return $this->result('unknown', null, 0, null, 'No supported CMS structure detected');
     }
 
@@ -28,5 +33,27 @@ class CmsDetector
     private function joomlaVersion(string $root): ?string { foreach (['/administrator/manifests/files/joomla.xml','/language/en-GB/en-GB.xml'] as $p) { $f=$root.$p; if(is_readable($f) && preg_match('/<version>([^<]+)/i', file_get_contents($f), $m)) return trim($m[1]); } return null; }
     private function openCartVersion(string $root): ?string { foreach (['/index.php','/admin/index.php','/system/startup.php'] as $p) { $f=$root.$p; if(is_readable($f) && preg_match('/(?:VERSION|APPLICATION_VERSION)[\'\"\s,)]{1,10}([0-9][0-9.]+)/i', file_get_contents($f, false, null, 0, 65536), $m)) return $m[1]; } return null; }
     private function dleVersion(string $root): ?string { foreach (['/engine/data/config.php','/engine/data/dbconfig.php','/engine/engine.php','/engine/init.php','/index.php'] as $p) { $f=$root.$p; if(is_readable($f) && preg_match('/(?:DLE_VERSION|version_id|\$config\[[\'\"]version[\'\"]\]|DataLife Engine(?:[^0-9]{0,20}))\s*[=:,\'\" ]+([0-9][0-9.]+)/i', file_get_contents($f, false, null, 0, 131072), $m)) return $m[1]; } return null; }
+    /** Laravel's own app root (artisan/bootstrap) is often one directory above the tracked
+     *  site path when the panel tracks the web server's document root, which for a properly
+     *  deployed Laravel app is the project's public/ subdirectory rather than the project root
+     *  itself. Checks $root directly first (covers the less common all-in-docroot deployment),
+     *  then its parent. */
+    private function laravelRoot(string $root): ?string {
+        $isLaravel = fn($base) => file_exists($base.'/artisan') && file_exists($base.'/bootstrap/app.php') && (file_exists($base.'/app/Http') || file_exists($base.'/routes/web.php'));
+        if ($isLaravel($root)) return $root;
+        $parent = rtrim(dirname($root), '/');
+        if ($parent !== '' && $parent !== $root && $isLaravel($parent)) return $parent;
+        return null;
+    }
+    private function laravelVersion(string $root): ?string {
+        $f = $root.'/composer.lock';
+        if (!is_readable($f)) return null;
+        $data = json_decode((string) file_get_contents($f), true);
+        if (!is_array($data)) return null;
+        foreach (array_merge($data['packages'] ?? [], $data['packages-dev'] ?? []) as $pkg) {
+            if (($pkg['name'] ?? null) === 'laravel/framework') return ltrim((string) ($pkg['version'] ?? ''), 'v') ?: null;
+        }
+        return null;
+    }
     private function detectDleAdmin(string $root): ?string { foreach (glob($root.'/*.php') ?: [] as $f) { $c=@file_get_contents($f, false, null, 0, 65536) ?: ''; if (preg_match('/DATALIFEENGINE|engine\/inc|dle_login_hash|member_db/i', $c)) return basename($f); } return null; }
 }
