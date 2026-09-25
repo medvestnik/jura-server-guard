@@ -255,6 +255,7 @@ return [
     'Target:' => 'Ціль:',
     'Files scanned:' => 'Перевірено файлів:',
     'Estimated total files:' => 'Оцінка всього файлів:',
+    'from last run' => 'за попереднім сканом',
     'Progress:' => 'Прогрес:',
     'unknown' => 'невідомо',
     'Skipped media:' => 'Пропущено медіа:',
