@@ -138,7 +138,7 @@ class ScannerService
             $seen[$path] = true; $count++;
             $relative = ltrim(str_replace($site['path'], '', $path), '/');
             $pathHash = hash('sha256', $path);
-            $previous = DB::first('SELECT * FROM file_snapshots WHERE path_hash=? AND path=?', [$pathHash, $path]);
+            $previous = DB::first('SELECT * FROM file_snapshots WHERE path_hash=? AND path=?', [$pathHash, $this->dbSafeUtf8($path)]);
             $meta = $this->meta($path, $previous, $relative, $options);
             $change = $dryRun ? 'dry-run' : $this->snapshot($site['id'], $path, $pathHash, $relative, $meta, $previous);
             $this->accountDiff($change);
@@ -237,7 +237,7 @@ class ScannerService
         if (!$force && ($files - $this->lastDbProgressFiles) < 100 && ($now - $this->lastDbProgressAt) < 3) return;
         $this->lastDbProgressAt = $now;
         $this->lastDbProgressFiles = $files;
-        DB::statement('UPDATE scan_runs SET files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, current_site=?, current_path=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', [$files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $site, $path, now(), $message, now(), $runId]);
+        DB::statement('UPDATE scan_runs SET files_scanned=?, findings_count=?, findings_new=?, skipped_media=?, skipped_directories=?, current_site=?, current_path=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE id=?', [$files, $findings, $findings, $this->skippedMedia, $this->skippedDirectories, $site, $path !== null ? $this->dbSafeUtf8($path) : null, now(), $message, now(), $runId]);
     }
 
     /**
@@ -427,10 +427,16 @@ class ScannerService
     private function snapshot(int $siteId, string $path, string $pathHash, string $relative, array $m, ?array $row): string
     {
         $groupCol = DB::quoteIdentifier('group');
-        if (!$row) { DB::insert("INSERT INTO file_snapshots (site_id,path,path_hash,relative_path,owner,$groupCol,permissions,size,mtime,ctime,inode,mode,uid,gid,extension,file_category,sha256,first_seen_at,last_seen_at,first_seen_scan_id,last_seen_scan_id,last_changed_scan_id,is_missing,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)", [$siteId,$path,$pathHash,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['ctime'],$m['inode'],$m['mode'],$m['uid'],$m['gid'],$m['extension'],$m['file_category'],$m['sha256'],now(),now(),$GLOBALS['__guard_scan_run_id'] ?? null,$GLOBALS['__guard_scan_run_id'] ?? null,$GLOBALS['__guard_scan_run_id'] ?? null,now(),now()]); return 'new'; }
+        // $path/$relative are raw filesystem bytes and aren't guaranteed valid UTF-8 (Windows-1251
+        // leftovers from migrated content, deliberately mangled filenames, ...); the utf8mb4 columns
+        // below reject them outright (SQLSTATE[22007]/1366) and previously crashed the whole scan run
+        // on whichever site's tree happened to contain one, mid-way through. Sanitized only for this
+        // bound parameter -- $path itself (used for stat/hash_file/fopen elsewhere) is untouched.
+        $dbPath = $this->dbSafeUtf8($path); $dbRelative = $this->dbSafeUtf8($relative);
+        if (!$row) { DB::insert("INSERT INTO file_snapshots (site_id,path,path_hash,relative_path,owner,$groupCol,permissions,size,mtime,ctime,inode,mode,uid,gid,extension,file_category,sha256,first_seen_at,last_seen_at,first_seen_scan_id,last_seen_scan_id,last_changed_scan_id,is_missing,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)", [$siteId,$dbPath,$pathHash,$dbRelative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['ctime'],$m['inode'],$m['mode'],$m['uid'],$m['gid'],$m['extension'],$m['file_category'],$m['sha256'],now(),now(),$GLOBALS['__guard_scan_run_id'] ?? null,$GLOBALS['__guard_scan_run_id'] ?? null,$GLOBALS['__guard_scan_run_id'] ?? null,now(),now()]); return 'new'; }
         $changed = !$this->metadataUnchanged($row, $m);
         $sha = $m['sha256'] ?? $row['sha256'] ?? null;
-        DB::statement("UPDATE file_snapshots SET site_id=?,path_hash=?,relative_path=?,owner=?,$groupCol=?,permissions=?,size=?,mtime=?,ctime=?,inode=?,mode=?,uid=?,gid=?,extension=?,file_category=?,sha256=?,last_seen_at=?,last_seen_scan_id=?,last_changed_scan_id=CASE WHEN ? THEN ? ELSE last_changed_scan_id END,last_changed_at=CASE WHEN ? THEN ? ELSE last_changed_at END,is_missing=0,updated_at=? WHERE id=?", [$siteId,$pathHash,$relative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['ctime'],$m['inode'],$m['mode'],$m['uid'],$m['gid'],$m['extension'],$m['file_category'],$sha,now(),$GLOBALS['__guard_scan_run_id'] ?? null,$changed?1:0,$GLOBALS['__guard_scan_run_id'] ?? null,$changed?1:0,now(),now(),$row['id']]);
+        DB::statement("UPDATE file_snapshots SET site_id=?,path_hash=?,relative_path=?,owner=?,$groupCol=?,permissions=?,size=?,mtime=?,ctime=?,inode=?,mode=?,uid=?,gid=?,extension=?,file_category=?,sha256=?,last_seen_at=?,last_seen_scan_id=?,last_changed_scan_id=CASE WHEN ? THEN ? ELSE last_changed_scan_id END,last_changed_at=CASE WHEN ? THEN ? ELSE last_changed_at END,is_missing=0,updated_at=? WHERE id=?", [$siteId,$pathHash,$dbRelative,$m['owner'],$m['group'],$m['permissions'],$m['size'],$m['mtime'],$m['ctime'],$m['inode'],$m['mode'],$m['uid'],$m['gid'],$m['extension'],$m['file_category'],$sha,now(),$GLOBALS['__guard_scan_run_id'] ?? null,$changed?1:0,$GLOBALS['__guard_scan_run_id'] ?? null,$changed?1:0,now(),now(),$row['id']]);
         return $changed ? 'changed' : 'same';
     }
 
@@ -526,6 +532,12 @@ class ScannerService
     private function previousRunId(string $scopeType, ?string $scopeValue): ?int { $sql = $scopeValue === null ? "SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND scope_type=? AND scope_value IS NULL ORDER BY id DESC LIMIT 1" : "SELECT id FROM scan_runs WHERE status IN ('completed','completed_with_limit') AND scope_type=? AND scope_value=? ORDER BY id DESC LIMIT 1"; $params = $scopeValue === null ? [$scopeType] : [$scopeType,$scopeValue]; $r=DB::first($sql, $params); return $r ? (int)$r['id'] : null; }
     private function accountDiff(string $change): void { $this->diffStats['files_seen_total']++; if ($change==='new') { $this->diffStats['files_new']++; $this->diffStats['files_changed_total']++; } elseif ($change==='changed') { $this->diffStats['files_modified']++; $this->diffStats['files_changed_total']++; } }
     private function fileCategory(string $path, string $rel): string { if ($this->isPhpLike($path)) return 'php'; if ($this->isWebConfig($path)) return 'config'; if ($this->isOrdinaryMedia($path)) return 'media'; return strtolower(pathinfo($path, PATHINFO_EXTENSION) ?: 'other'); }
+    // Makes an arbitrary filesystem byte string safe for a utf8mb4 SQL bind parameter without
+    // touching the original (still used for stat/hash_file/fopen by the caller). The ISO-8859-1
+    // round trip maps every byte 0x00-0xFF to a distinct codepoint, so it's lossless/reversible --
+    // a genuinely non-UTF-8 name just won't render "correctly", which is secondary to never
+    // losing track of the file or crashing the scan over it (SQLSTATE[22007]/1366).
+    private function dbSafeUtf8(string $s): string { return mb_check_encoding($s, 'UTF-8') ? $s : mb_convert_encoding($s, 'UTF-8', 'ISO-8859-1'); }
     private function heavyAnalysisCandidate(string $path, string $root, string $rel, array $m): bool { $base=basename($path); if ($this->isWebConfig($path) || preg_match('/^google.*\.html$/i',$base) || str_starts_with($base,'.')) return true; if ($this->suspiciousLocation($path) || $this->isValidationPath($path)) return true; if ($this->isPhpLike($path) && preg_match('#/(uploads|cache|tmp|media|images|storage)/#i',$path)) return true; if (preg_match('/\.(phar|phtml|shtml|cgi|pl|py|sh|asp|aspx)$/i',$path)) return true; if (isset(($this->activeFindingPathHashes ??= $this->loadActiveFindingPathHashes())[hash('sha256',$path)])) return true; return $this->structuralSuspiciousPath($path); }
     private function highRiskPath(string $path): bool { return (bool)preg_match('#/(wp-admin|wp-content|wp-includes|uploads|cache|tmp|media|images|storage)(/|$)#i', $path); }
     private function structuralSuspiciousPath(string $path): bool { return $this->newStructuralSuspiciousPath($path); }
@@ -821,27 +833,34 @@ class ScannerService
 
     private function upsertFinding(int $runId, int $siteId, string $path, array $m, array $f): void
     {
-        $rules = json_encode(array_map(fn($r)=>array_filter(['name'=>$r['name']??'runtime','risk'=>$r['risk']??$f['risk'],'pattern'=>$r['pattern']??'','snippet'=>$r['snippet']??null,'why'=>$r['why']??null,'indicators'=>$r['indicators']??null], fn($v)=>$v !== null), $f['matched']), JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+        // JSON_INVALID_UTF8_SUBSTITUTE: a matched snippet can come straight from raw file content,
+        // which isn't guaranteed valid UTF-8 -- without this flag json_encode() silently returns
+        // false on such content, which would otherwise bind as an unexpected type below.
+        $rules = json_encode(array_map(fn($r)=>array_filter(['name'=>$r['name']??'runtime','risk'=>$r['risk']??$f['risk'],'pattern'=>$r['pattern']??'','snippet'=>$r['snippet']??null,'why'=>$r['why']??null,'indicators'=>$r['indicators']??null], fn($v)=>$v !== null), $f['matched']), JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE|JSON_INVALID_UTF8_SUBSTITUTE);
         $sig = $f['signature'] ?? null;
         $sigId = isset($sig['id']) && $sig['id'] !== '' ? (int)$sig['id'] : null;
         $sigName = $sig['name'] ?? null;
         $sigSource = $sig['source'] ?? null;
-        $matchDetails = json_encode(['signature'=>$sigName,'signature_id'=>$sigId,'source'=>$sigSource,'matched'=>$f['matched'] ?? [],'risk_explanation'=>$f['description'] ?? null], JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+        $matchDetails = json_encode(['signature'=>$sigName,'signature_id'=>$sigId,'source'=>$sigSource,'matched'=>$f['matched'] ?? [],'risk_explanation'=>$f['description'] ?? null], JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE|JSON_INVALID_UTF8_SUBSTITUTE);
         $pathHash = hash('sha256', $path);
         $fingerprint = hash('sha256', $path.'|'.$f['type'].'|'.($f['rule_key'] ?? '').'|'.($m['sha256'] ?? ''));
         $findingHash = hash('sha256', $path.'|'.$f['type'].'|'.($f['rule_key'] ?? '').'|'.$fingerprint);
-        $ignored = DB::first("SELECT id,sha256 FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status='ignored'", [$findingHash,$pathHash,$path]);
+        // See dbSafeUtf8()'s comment on snapshot(): $path is raw filesystem bytes, not guaranteed
+        // valid UTF-8. $pathHash/$fingerprint/$findingHash above are already computed from the
+        // original $path, so identity/dedup is unaffected; only the bound SQL parameter changes.
+        $dbPath = $this->dbSafeUtf8($path);
+        $ignored = DB::first("SELECT id,sha256 FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status='ignored'", [$findingHash,$pathHash,$dbPath]);
         if ($ignored && ($ignored['sha256'] ?? null) === ($m['sha256'] ?? null)) {
             $this->recordScanFinding($runId, (int)$ignored['id']);
             return;
         }
-        $row = DB::first("SELECT id,status FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status NOT IN ('ignored','quarantined')", [$findingHash,$pathHash,$path]);
+        $row = DB::first("SELECT id,status FROM findings WHERE finding_hash=? AND path_hash=? AND path=? AND status NOT IN ('ignored','quarantined')", [$findingHash,$pathHash,$dbPath]);
         $logIds = json_encode($f['log_ids'] ?? [], JSON_UNESCAPED_SLASHES);
         if ($row) {
             $findingId = (int)$row['id'];
             DB::statement('UPDATE findings SET site_id=?,path_hash=?,finding_hash=?,risk=?,rule_key=?,title=?,description=?,matched_rules=?,related_log_event_ids=?,sha256=?,size=?,mtime=?,owner=?,permissions=?,last_seen_at=?,last_seen_scan_id=?,last_matched_signature_id=?,matched_signature_name=?,matched_signature_source=?,signature_match_details=?,updated_at=? WHERE id=?', [$siteId,$pathHash,$findingHash,$f['risk'],$f['rule_key'] ?? null,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),$runId,$sigId,$sigName,$sigSource,$matchDetails,now(),$findingId]);
         } else {
-            $findingId = DB::insert('INSERT INTO findings (scan_run_id,first_seen_scan_id,last_seen_scan_id,last_matched_signature_id,matched_signature_name,matched_signature_source,signature_match_details,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$runId,$runId,$runId,$sigId,$sigName,$sigSource,$matchDetails,$siteId,$path,$pathHash,$findingHash,$f['risk'],'new',$f['type'],$f['rule_key'] ?? null,$fingerprint,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),now(),now()]);
+            $findingId = DB::insert('INSERT INTO findings (scan_run_id,first_seen_scan_id,last_seen_scan_id,last_matched_signature_id,matched_signature_name,matched_signature_source,signature_match_details,site_id,path,path_hash,finding_hash,risk,status,type,rule_key,fingerprint,title,description,matched_rules,related_log_event_ids,sha256,size,mtime,owner,permissions,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [$runId,$runId,$runId,$sigId,$sigName,$sigSource,$matchDetails,$siteId,$dbPath,$pathHash,$findingHash,$f['risk'],'new',$f['type'],$f['rule_key'] ?? null,$fingerprint,$f['title'],$f['description'],$rules,$logIds,$m['sha256'],$m['size'],$m['mtime'],$m['owner'],$m['permissions'],now(),now(),now(),now()]);
             $this->maybeAutoCreateSignature($findingId, $path, $f, $m, $sig !== null);
         }
         $this->recordScanFinding($runId, $findingId);
@@ -863,7 +882,7 @@ class ScannerService
         $slug = 'auto-' . substr($sha, 0, 16);
         if (DB::first('SELECT id FROM malware_signatures WHERE slug=?', [$slug])) return;
         DB::insert('INSERT INTO malware_signatures (name,slug,description,risk,type,pattern_type,pattern_json,target_extensions,enabled,source,source_finding_id,source_file_sha256,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?)', [
-            'Auto: ' . basename($path),
+            'Auto: ' . $this->dbSafeUtf8(basename($path)),
             $slug,
             'Automatically created from finding #' . $findingId . ' (' . ($f['title'] ?? '') . ') during a scan.',
             'critical',
