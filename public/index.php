@@ -15,7 +15,14 @@ Auth::require();
 function scan_pid_alive(int $pid): bool { return $pid > 0 && (function_exists('posix_kill') ? @posix_kill($pid, 0) : is_dir('/proc/'.$pid)); }
 function scan_active_context(): array {
     if (DB::first("SELECT id FROM scan_runs WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated LIMIT 1")) { DB::statement("UPDATE scan_runs SET status='completed', finished_at=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated", [now(), 'Auto-completed by web active-scan context because progress reached 100%', now(), 'Auto-completed stale 100% scan', now()]); (new ScanLock())->unlock(true); }
-    $run = DB::first("SELECT * FROM scan_runs WHERE status='running' AND NOT (total_files_estimated > 0 AND files_scanned >= total_files_estimated) ORDER BY id DESC LIMIT 1");
+    // total_files_estimated is NULL for changed_only-mode scans (the estimate walk is skipped
+    // entirely for that mode -- see ScannerService::scan()), and SQL's three-valued logic turns
+    // NOT(NULL > 0 AND ...) into NULL rather than TRUE, which a WHERE clause treats as false: a
+    // running changed_only scan's row was silently excluded here, making the dashboard fall back
+    // to lock-file-only info (blank profile/scope, zero files, stale-looking elapsed time) for
+    // the entire duration of every fast-profile scan. Spelled out explicitly instead of NOT(...)
+    // so the NULL case resolves to "still running" rather than to neither true nor false.
+    $run = DB::first("SELECT * FROM scan_runs WHERE status='running' AND (total_files_estimated IS NULL OR total_files_estimated <= 0 OR files_scanned < total_files_estimated) ORDER BY id DESC LIMIT 1");
     $lock = (new ScanLock())->read();
     $pid = (int)($run['pid'] ?? $lock['pid'] ?? 0);
     $pidAlive = $pid > 0 && scan_pid_alive($pid);

@@ -480,7 +480,10 @@ class Application
     {
         if (DB::first("SELECT id FROM scan_runs WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated LIMIT 1")) { DB::statement("UPDATE scan_runs SET status='completed', finished_at=?, error_text=?, last_heartbeat_at=?, progress_message=?, updated_at=? WHERE status='running' AND total_files_estimated > 0 AND files_scanned >= total_files_estimated", [now(), 'Auto-completed by guard:scan-active because progress reached 100%', now(), 'Auto-completed stale 100% scan', now()]); (new ScanLock())->unlock(true); }
         $lock = (new ScanLock())->read();
-        $run = DB::first("SELECT * FROM scan_runs WHERE status='running' AND NOT (total_files_estimated > 0 AND files_scanned >= total_files_estimated) ORDER BY id DESC LIMIT 1") ?: [];
+        // See the matching comment in public/index.php's scan_active_context(): total_files_estimated
+        // is NULL for changed_only-mode scans, and NOT(NULL > 0 AND ...) is NULL rather than TRUE
+        // under SQL's three-valued logic, so a running changed_only scan's row was silently excluded.
+        $run = DB::first("SELECT * FROM scan_runs WHERE status='running' AND (total_files_estimated IS NULL OR total_files_estimated <= 0 OR files_scanned < total_files_estimated) ORDER BY id DESC LIMIT 1") ?: [];
         $running = (bool)$lock || (bool)$run;
         echo "Scan running: ".($running ? 'yes' : 'no')."\n";
         if (!$running) return 0;
