@@ -215,7 +215,7 @@ class ScannerService
         foreach ($files as $e) if (isset($forced[$e['path_hash']]) || (($options['paranoid'] ?? false) && $this->paranoidRecheckCandidate($e['path'], $e['relative_path']))) $candidates[$e['path_hash']] = $e;
         $t['candidate_selection_time'] = microtime(true) - $a;
 
-        $a = microtime(true);
+        $a = microtime(true); $scanned = 0;
         foreach ($candidates as $entry) {
             if ($this->deadlineReached($options)) { $this->limitReached = true; break; }
             $meta = $this->metaFromManifestEntry($entry, $previousRows[$entry['path_hash']] ?? null);
@@ -225,12 +225,17 @@ class ScannerService
                 if (!$dryRun) $this->upsertFinding($runId, $site['id'], $entry['path'], $meta, $finding);
                 $findings++;
             }
+            // A large site's candidate set (or a handful of very large/slow-to-analyze files) can
+            // take well over the 90s dashboard staleness threshold on its own, and nothing in this
+            // loop previously touched the heartbeat between "Building fast site manifest" and the
+            // final "Finished changed-only scan" -- a perfectly healthy scan looked hung.
+            if (++$scanned % 25 === 0) $this->updateRunProgress($runId, $baseFiles + $scanned, $baseFindings + $findings, $site['name'] ?? null, $entry['path'], "Analyzing changed files for {$site['name']}");
         }
         $t['content_scan_time'] = microtime(true) - $a;
         $this->progress($options, sprintf('Content scan completed: candidates=%d findings=%d elapsed=%ds', count($candidates), $findings, (int)round($t['content_scan_time'])));
 
         $a = microtime(true);
-        if (!$dryRun) { $this->refreshSnapshotsFromManifest($site['id'], $runId, $files, $previousRows, $currentByPathHash, $deleted); $this->writeManifestSummary($runId, $site['id'], $manifest, $t + ['elapsed'=>microtime(true)-$siteStart, 'baseline_refreshed'=>$needsBaselineRefresh]); }
+        if (!$dryRun) { $this->refreshSnapshotsFromManifest($site, $runId, $files, $previousRows, $currentByPathHash, $deleted, $baseFiles, $baseFindings + $findings); $this->writeManifestSummary($runId, $site['id'], $manifest, $t + ['elapsed'=>microtime(true)-$siteStart, 'baseline_refreshed'=>$needsBaselineRefresh]); }
         $t['finalize_time'] = microtime(true) - $a;
         if ($needsBaselineRefresh) $this->progress($options, 'Snapshot schema changed; refreshed baseline');
         $this->progress($options, sprintf('Changed-only timings: inventory_time=%.3fs manifest_compare_time=%.3fs diff_time=%.3fs candidate_selection_time=%.3fs content_scan_time=%.3fs finalize_time=%.3fs', $t['inventory_time'], $t['manifest_compare_time'], $t['diff_time'], $t['candidate_selection_time'], $t['content_scan_time'], $t['finalize_time']));
@@ -529,7 +534,18 @@ class ScannerService
     private function loadHighRiskFindingPathHashes(): array { $h=[]; foreach (DB::select("SELECT DISTINCT path_hash FROM findings WHERE risk IN ('critical','high') AND status NOT IN ('ignored','quarantined','resolved')") as $r) $h[$r['path_hash']]=true; return $h; }
     private function loadActiveFindingPathHashes(): array { $h=[]; foreach (DB::select("SELECT DISTINCT path_hash FROM findings WHERE status NOT IN ('ignored','quarantined')") as $r) $h[$r['path_hash']]=true; return $h; }
     private function changedOnlyForcedHashes(string $root, array $options): array { $h = $this->highRiskFindingPathHashes ??= $this->loadHighRiskFindingPathHashes(); foreach ((array)($options['force_paths'] ?? []) as $p) $h[hash('sha256',$p)]=true; return $h; }
-    private function refreshSnapshotsFromManifest(int $siteId, int $runId, array $files, array $previousRows, array $currentByPathHash, array $deleted): void { foreach ($files as $e) { $prev=$previousRows[$e['path_hash']]??null; $m=$this->metaFromManifestEntry($e,$prev); $this->snapshot($siteId,$e['path'],$e['path_hash'],$e['relative_path'],$m,$prev); } foreach ($deleted as $r) DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,last_changed_scan_id=?,updated_at=? WHERE id=?', [now(),$runId,now(),$r['id']]); }
+    // Touches every file's snapshot row (even unchanged ones, to bump last_seen_at) individually --
+    // one UPDATE/INSERT per file, no batching -- so a large site (100k+ files) can spend real time
+    // here with nothing else in scanSiteChangedOnly() touching the heartbeat either side of it. See
+    // the matching comment on the content-scan loop above.
+    private function refreshSnapshotsFromManifest(array $site, int $runId, array $files, array $previousRows, array $currentByPathHash, array $deleted, int $baseFiles, int $baseFindings): void {
+        $siteId = $site['id']; $touched = 0;
+        foreach ($files as $e) {
+            $prev=$previousRows[$e['path_hash']]??null; $m=$this->metaFromManifestEntry($e,$prev); $this->snapshot($siteId,$e['path'],$e['path_hash'],$e['relative_path'],$m,$prev);
+            if (++$touched % 500 === 0) $this->updateRunProgress($runId, $baseFiles + $touched, $baseFindings, $site['name'] ?? null, $e['path'], "Saving file snapshots for {$site['name']}");
+        }
+        foreach ($deleted as $r) DB::statement('UPDATE file_snapshots SET is_missing=1,last_changed_at=?,last_changed_scan_id=?,updated_at=? WHERE id=?', [now(),$runId,now(),$r['id']]);
+    }
 
 
     private function deadlineAt(array $options): ?int { $max = (int)($options['max_seconds'] ?? 0); return $max > 0 ? time() + $max : null; }
