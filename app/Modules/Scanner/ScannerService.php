@@ -68,6 +68,15 @@ class ScannerService
             $this->progress($options, 'Estimating total eligible files before scanning');
             $totalEstimated = $this->estimateTotalFiles($runId, $scopeType, $scopeValue, $options);
             DB::statement('UPDATE scan_runs SET total_files_estimated=?, updated_at=? WHERE id=?', [$totalEstimated, now(), $runId]);
+        } elseif ($previousRunId) {
+            // A real estimate walk defeats the whole point of changed_only (it's the same full
+            // directory walk this mode exists to avoid), but the previous completed run of this
+            // same scope already recorded exactly how many files it saw -- files_seen_total is
+            // written by every mode, not just the walk-based estimate. Reused here purely so the
+            // dashboard has *a* number for a progress percentage instead of permanently showing
+            // "unknown" for fast scans; it's an approximation from last time, not a fresh count.
+            $approxTotal = DB::first('SELECT files_seen_total FROM scan_runs WHERE id=?', [$previousRunId])['files_seen_total'] ?? null;
+            if ($approxTotal > 0) DB::statement('UPDATE scan_runs SET total_files_estimated=?, updated_at=? WHERE id=?', [$approxTotal, now(), $runId]);
         }
         try {
             $GLOBALS['__guard_scan_run_id'] = $runId;
