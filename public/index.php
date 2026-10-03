@@ -360,7 +360,9 @@ if ($path === '/rules/toggle' && $method==='POST') { $table=($_POST['table']??'r
 $threatIpClassifications = ['scanner','bruteforce','webshell_access','bot','direct_login','manual','unknown'];
 if ($path === '/threat-ips/save' && $method === 'POST') {
     $ip = trim((string)($_POST['ip'] ?? ''));
-    if (filter_var($ip, FILTER_VALIDATE_IP)) {
+    $parsedIp = parse_ip_or_cidr($ip);
+    if ($parsedIp) {
+        $ip = $parsedIp['cidr'];
         $classification = in_array($_POST['classification'] ?? '', $threatIpClassifications, true) ? $_POST['classification'] : 'unknown';
         $risk = in_array($_POST['risk'] ?? '', ['low','medium','high','critical'], true) ? $_POST['risk'] : 'medium';
         $notes = trim((string)($_POST['notes'] ?? ''));
@@ -378,8 +380,10 @@ if ($path === '/threat-ips/save' && $method === 'POST') {
 if ($path === '/threat-ips/delete' && $method === 'POST') { $id=(int)$_POST['id']; $row=DB::first('SELECT firewall_status FROM threat_ips WHERE id=?',[$id]); if(!in_array(($row['firewall_status']??''),['blocked','network_blocked'],true)){ DB::statement('DELETE FROM threat_ip_evidence WHERE threat_ip_id=?',[$id]); DB::statement('DELETE FROM threat_ips WHERE id=?',[$id]); } redirect('/threat-ips'); }
 if ($path === '/threat-ips/block' && $method === 'POST') {
     $ip = trim((string)($_POST['ip'] ?? ''));
+    $parsedIp = parse_ip_or_cidr($ip);
+    if ($parsedIp) $ip = $parsedIp['cidr'];
     $existing = DB::first('SELECT id FROM threat_ips WHERE ip=?', [$ip]);
-    if (!$existing && filter_var($ip, FILTER_VALIDATE_IP)) {
+    if (!$existing && $parsedIp) {
         $classification = in_array($_POST['classification'] ?? '', $threatIpClassifications, true) ? $_POST['classification'] : 'unknown';
         $risk = in_array($_POST['risk'] ?? '', ['low','medium','high','critical'], true) ? $_POST['risk'] : 'high';
         $id = DB::insert('INSERT INTO threat_ips (ip,classification,risk,notes,hit_count,source,first_seen_at,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,0,?,?,?,?,?)', [$ip,$classification,$risk,trim((string)($_POST['notes']??'')),'firewall',now(),now(),now(),now()]);

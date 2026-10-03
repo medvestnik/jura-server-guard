@@ -492,6 +492,8 @@ return [
     'Block IP' => 'Заблокувати IP',
     'Block' => 'Заблокувати',
     'Block this IP in the server firewall?' => 'Заблокувати цей IP у міжмережевому екрані сервера?',
+    'This is a range (CIDR), not a single address — the whole range will be blocked.' => 'Це діапазон (CIDR), а не окрема адреса — буде заблоковано весь діапазон.',
+    'or' => 'або',
     'firewall' => 'міжмережевий екран',
     'Firewall actions are disabled.' => 'Дії з міжмережевим екраном вимкнено.',
     'Firewall actions are disabled. Enable JURA_FIREWALL_ACTIONS_ENABLED=true to use blocking buttons.' => 'Блокування з панелі вимкнено. Встановіть JURA_FIREWALL_ACTIONS_ENABLED=true, щоб використовувати ці кнопки.',

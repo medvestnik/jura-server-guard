@@ -394,6 +394,18 @@ insertion. Trusted IPs and private, loopback, link-local, or reserved ranges are
 reduce the chance of locking out legitimate management access. The panel process needs the
 permissions required to manage the selected firewall backend and persistent rules file.
 
+Both the IP field and the **Block** action accept a CIDR range (`188.213.202.0/24`) in addition
+to a single address — useful when an attack is spread across a whole subnet. A range block is
+refused if it would be broader than `JURA_FIREWALL_MIN_CIDR_PREFIX_V4`/`_V6` (default `/16` for
+IPv4, `/48` for IPv6 — large enough to cover a real botnet-style subnet, small enough that a typo
+or an overeager click can't firewall off a huge chunk of the internet), or if it would contain an
+address already on the Trusted IPs list.
+
+```env
+JURA_FIREWALL_MIN_CIDR_PREFIX_V4=16
+JURA_FIREWALL_MIN_CIDR_PREFIX_V6=48
+```
+
 This is a **network-layer block for direct traffic**. If a site is behind Cloudflare or another
 reverse proxy, the TCP connection reaching this server comes from the proxy address, while the
 original visitor IP is restored only inside Nginx/Apache and written to the access log. An

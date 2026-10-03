@@ -35,14 +35,14 @@ $evidenceByIp = $evidenceByIp ?? [];
   <form method="post" action="/threat-ips/save">
     <input type="hidden" name="log_event_id" value="<?= e($contextEvent['id'] ?? '') ?>">
     <div class="form-row">
-      <input class="input" name="ip" placeholder="1.2.3.4" value="<?= e($prefillIp) ?>" required>
+      <input class="input" name="ip" placeholder="1.2.3.4 <?= e(t('or')) ?> 1.2.3.0/24" value="<?= e($prefillIp) ?>" required>
       <select class="input" name="classification"><?php foreach($classifications as $c): ?><option value="<?= e($c) ?>" <?= ($existingIp['classification'] ?? '')===$c?'selected':'' ?>><?= e(t($c)) ?></option><?php endforeach ?></select>
       <select class="input" name="risk"><?php foreach(['low','medium','high','critical'] as $r): ?><option value="<?= e($r) ?>" <?= ($existingIp['risk'] ?? 'medium')===$r?'selected':'' ?>><?= e(t($r)) ?></option><?php endforeach ?></select>
     </div>
     <p><textarea class="input wide-input" name="notes" rows="2" placeholder="<?= e(t('Optional comment')) ?>"></textarea></p>
     <div class="actions">
       <button class="btn"><?= e(t('Save')) ?></button>
-      <?php if ($prefillIp !== '' && !in_array(($existingIp['firewall_status']??''),['blocked','network_blocked'],true)): ?><button class="btn danger" type="submit" formaction="/threat-ips/block" formmethod="post" onclick="if(!confirm(<?= e(json_encode(t('Block this IP in the server firewall?'))) ?>))return false;var button=this;setTimeout(function(){button.disabled=true;button.textContent=<?= e(json_encode(t('Blocking…'))) ?>;},0);return true"><?= e(t('Block IP')) ?></button><?php elseif($prefillIp !== ''): ?><span class="badge low"><?= e(t('Network rule active')) ?></span><?php endif ?>
+      <?php if ($prefillIp !== '' && !in_array(($existingIp['firewall_status']??''),['blocked','network_blocked'],true)): ?><button class="btn danger" type="submit" formaction="/threat-ips/block" formmethod="post" onclick="var ipField=this.form.querySelector('input[name=&quot;ip&quot;]');var msg=<?= e(json_encode(t('Block this IP in the server firewall?'))) ?>;if(ipField&&ipField.value.indexOf('/')!==-1)msg+='\n\n'+<?= e(json_encode(t('This is a range (CIDR), not a single address — the whole range will be blocked.'))) ?>;if(!confirm(msg))return false;var button=this;setTimeout(function(){button.disabled=true;button.textContent=<?= e(json_encode(t('Blocking…'))) ?>;},0);return true"><?= e(t('Block IP')) ?></button><?php elseif($prefillIp !== ''): ?><span class="badge low"><?= e(t('Network rule active')) ?></span><?php endif ?>
     </div>
   </form>
   <?php if (!config('guard.firewall_actions_enabled')): ?><p class="muted"><?= e(t('Firewall actions are disabled. Enable JURA_FIREWALL_ACTIONS_ENABLED=true to use blocking buttons.')) ?></p><?php endif ?>
