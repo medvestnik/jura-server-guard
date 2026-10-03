@@ -53,6 +53,14 @@ return [
     'firewall_backend' => env_value('JURA_FIREWALL_BACKEND', 'auto'),
     'firewall_cmd' => env_value('JURA_FIREWALL_CMD', '/usr/bin/firewall-cmd'),
     'firewall_block_zone' => env_value('JURA_FIREWALL_BLOCK_ZONE', 'drop'),
+    // Minimum CIDR prefix length accepted for a range block (e.g. 188.213.202.0/24 has prefix 24).
+    // A smaller number here means a single block action can cover more addresses -- these floors
+    // exist so a typo (or an overeager "block the whole attacking network") can't firewall off a
+    // huge swath of the internet, or all of it, through this panel. /16 is already 65536 IPv4
+    // addresses; IPv6 allocations are typically /48-/56 per customer, so /48 is a full customer
+    // block without reaching into provider-wide space.
+    'firewall_min_cidr_prefix_v4' => (int) env_value('JURA_FIREWALL_MIN_CIDR_PREFIX_V4', 16),
+    'firewall_min_cidr_prefix_v6' => (int) env_value('JURA_FIREWALL_MIN_CIDR_PREFIX_V6', 48),
     'iptables_cmd' => env_value('JURA_IPTABLES_CMD', '/usr/sbin/iptables'),
     'ip6tables_cmd' => env_value('JURA_IP6TABLES_CMD', '/usr/sbin/ip6tables'),
     'iptables_save_cmd' => env_value('JURA_IPTABLES_SAVE_CMD', '/usr/sbin/iptables-save'),

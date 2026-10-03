@@ -22,6 +22,16 @@ class IpBlockService
         if (DB::first('SELECT id FROM trusted_ips WHERE ip=?', [$ip])) {
             throw new RuntimeException('Refusing to block an IP that is in the trusted list.');
         }
+        // A range block can swallow a trusted single IP even when the trusted entry itself
+        // doesn't match $ip character-for-character (the exact-match check above only catches a
+        // trusted entry equal to the whole range being blocked, e.g. both being the same /24).
+        if (str_contains($ip, '/')) {
+            foreach (DB::select('SELECT ip FROM trusted_ips') as $trusted) {
+                if (ip_in_cidr((string) $trusted['ip'], $ip)) {
+                    throw new RuntimeException("Refusing to block {$ip}: it contains trusted IP {$trusted['ip']}.");
+                }
+            }
+        }
 
         $backend = $this->resolveBackend($ip);
         if ($backend === null) throw new RuntimeException('Neither active firewalld nor iptables is available.');
@@ -69,7 +79,7 @@ class IpBlockService
             'available'=>true,
             'runtime'=>$runtime['code'] === 0,
             'permanent'=>$this->savedRuleExists($rulesFile, $ip),
-            'backend'=>filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'ip6tables' : 'iptables',
+            'backend'=>filter_var($this->baseIp($ip), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'ip6tables' : 'iptables',
             'rules_file'=>$rulesFile,
             'error'=>null,
         ];
@@ -131,7 +141,7 @@ class IpBlockService
     {
         $systemctl = (string) config('guard.systemctl_cmd');
         if (!$this->isExecutable($systemctl)) return;
-        $service = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'ip6tables.service' : 'iptables.service';
+        $service = filter_var($this->baseIp($ip), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'ip6tables.service' : 'iptables.service';
         $exists = $this->run([$systemctl, 'list-unit-files', $service, '--no-legend']);
         if ($exists['code'] !== 0 || !str_contains($exists['stdout'], $service)) return;
         $enabled = $this->run([$systemctl, 'is-enabled', $service]);
@@ -144,10 +154,15 @@ class IpBlockService
     {
         if (!is_readable($path)) return false;
         $rules = (string) file_get_contents($path);
+        // A bare IP's saved rule may be written as either the address alone or with an explicit
+        // /32 (/128 for v6) -- both mean "this one host". A CIDR range's $ip already carries its
+        // own prefix, so it must match exactly: appending another optional /32 here would make
+        // "188.213.202.0/24" also match a line for "188.213.202.0/24/32", which is never real.
+        $suffix = str_contains($ip, '/') ? '' : '(?:\/(?:32|128))?';
         foreach (preg_split('/\R/', $rules) ?: [] as $line) {
             if (!str_starts_with($line, '-A INPUT ')) continue;
             if (!preg_match('/(?:^|\s)-j\s+DROP(?:\s|$)/', $line)) continue;
-            if (preg_match('/(?:^|\s)-s\s+'.preg_quote($ip, '/').'(?:\/(?:32|128))?(?:\s|$)/', $line)) return true;
+            if (preg_match('/(?:^|\s)-s\s+'.preg_quote($ip, '/').$suffix.'(?:\s|$)/', $line)) return true;
         }
         return false;
     }
@@ -170,19 +185,20 @@ class IpBlockService
 
     private function iptablesAvailable(string $ip): bool
     {
-        $key = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'guard.ip6tables_cmd' : 'guard.iptables_cmd';
+        $key = filter_var($this->baseIp($ip), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'guard.ip6tables_cmd' : 'guard.iptables_cmd';
         return $this->isExecutable((string)config($key));
     }
 
     private function validateIp(string $ip): string
     {
-        $ip = trim($ip);
-        if (!filter_var($ip, FILTER_VALIDATE_IP)) throw new RuntimeException('Invalid IP address.');
-        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-            throw new RuntimeException('Refusing to block a private, loopback, link-local, or reserved IP address.');
-        }
-        return $ip;
+        $parsed = parse_ip_or_cidr($ip);
+        if (!$parsed) throw new RuntimeException('Invalid IP address.');
+        return $parsed['cidr'];
     }
+    /** The bare address a CIDR string's prefix is relative to, or $ip itself when it has none --
+     *  used everywhere a decision only depends on IPv4 vs IPv6 (picking iptables/ip6tables, the
+     *  matching config key, ...), since filter_var() doesn't accept a "/N" suffix at all. */
+    private function baseIp(string $ip): string { return explode('/', $ip, 2)[0]; }
 
     private function zone(): string
     {
@@ -193,15 +209,15 @@ class IpBlockService
 
     private function iptablesBinary(string $ip): string
     {
-        $binary = (string) config(filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'guard.ip6tables_cmd' : 'guard.iptables_cmd');
+        $binary = (string) config(filter_var($this->baseIp($ip), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'guard.ip6tables_cmd' : 'guard.iptables_cmd');
         if (!$this->isExecutable($binary)) throw new RuntimeException(basename($binary ?: 'iptables').' is not available.');
         return $binary;
     }
 
     private function firewalldBinary(): string { return (string) config('guard.firewall_cmd'); }
-    private function iptablesSaveBinary(string $ip): string { return (string) config(filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'guard.ip6tables_save_cmd' : 'guard.iptables_save_cmd'); }
-    private function iptablesInitBinary(string $ip): string { return (string) config(filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'guard.ip6tables_init_cmd' : 'guard.iptables_init_cmd'); }
-    private function iptablesRulesFile(string $ip): string { return (string) config(filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'guard.ip6tables_rules_file' : 'guard.iptables_rules_file'); }
+    private function iptablesSaveBinary(string $ip): string { return (string) config(filter_var($this->baseIp($ip), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'guard.ip6tables_save_cmd' : 'guard.iptables_save_cmd'); }
+    private function iptablesInitBinary(string $ip): string { return (string) config(filter_var($this->baseIp($ip), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'guard.ip6tables_init_cmd' : 'guard.iptables_init_cmd'); }
+    private function iptablesRulesFile(string $ip): string { return (string) config(filter_var($this->baseIp($ip), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'guard.ip6tables_rules_file' : 'guard.iptables_rules_file'); }
     private function isExecutable(string $path): bool { return $path !== '' && is_file($path) && is_executable($path); }
 
     private function run(array $command): array
