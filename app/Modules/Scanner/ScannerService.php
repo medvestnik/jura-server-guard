@@ -151,7 +151,7 @@ class ScannerService
             $meta = $this->meta($path, $previous, $relative, $options);
             $change = $dryRun ? 'dry-run' : $this->snapshot($site['id'], $path, $pathHash, $relative, $meta, $previous);
             $this->accountDiff($change);
-            $analyze = $mode === 'full' || $change !== 'same' || ($mode !== 'changed_only' && $this->heavyAnalysisCandidate($path, $site['path'], $relative, $meta)) || (($options['paranoid'] ?? false) && $this->paranoidRecheckCandidate($path, $relative)) || $this->mustAnalyzeChangedOnly($path, $site['path'], $relative, $options);
+            $analyze = $mode === 'full' || $change !== 'same' || ($mode !== 'changed_only' && $this->heavyAnalysisCandidate($path, $site['path'], $relative, $meta)) || (($options['paranoid'] ?? false) && $this->paranoidRecheckCandidate($path, $relative)) || $this->mustAnalyzeChangedOnly($path, $site['path'], $relative, $options) || $this->cmsMismatchCandidate($site, $relative);
             if (!$analyze) { $this->diffStats['files_skipped_unchanged']++; continue; }
             $this->diffStats['files_analyzed']++;
             foreach ($this->detect($site, $path, $relative, $meta, $change, $options) as $finding) {
@@ -186,10 +186,33 @@ class ScannerService
         $a = microtime(true); $previous = $this->previousCompletedManifest($site['id']); $t['manifest_compare_time'] = microtime(true) - $a;
         if ($previous && ($previous['site_manifest_hash'] ?? null) === $manifest['site_manifest_hash']) {
             $this->diffStats['files_skipped_unchanged'] += $count;
+            // The whole-site manifest hash is the fast path's main speedup: identical hash means
+            // nothing on disk changed at all, so the usual per-file diff/candidate-selection/finding
+            // code below never runs. A CMS mismatch is the one thing that must still surface here --
+            // it's not a new/modified file, it's an existing one that was never checked against this
+            // rule before, so unlike everything else, "unchanged since last scan" doesn't mean
+            // "already evaluated by this check". Scoped to joomla/wordpress sites and the handful of
+            // marker paths cmsMismatchCandidate() matches, so it costs nothing for the other 99% of
+            // scans where there's nothing to find.
+            $findings = 0;
+            $cms = $site['cms_type'] ?? '';
+            if (($cms === 'joomla' || $cms === 'wordpress') && !$dryRun) {
+                $mismatchEntries = array_filter($files, fn($e) => $this->cmsMismatchCandidate($site, $e['relative_path']));
+                if ($mismatchEntries) {
+                    $previousRows = $this->loadSnapshotMap($site['id']);
+                    foreach ($mismatchEntries as $entry) {
+                        $meta = $this->metaFromManifestEntry($entry, $previousRows[$entry['path_hash']] ?? null);
+                        foreach ($this->detect($site, $entry['path'], $entry['relative_path'], $meta, 'same', $options) as $finding) {
+                            $this->upsertFinding($runId, $site['id'], $entry['path'], $meta, $finding);
+                            $findings++;
+                        }
+                    }
+                }
+            }
             $this->progress($options, 'Manifest unchanged: skipped content analysis');
             $this->progress($options, 'No file changes detected; skipped content analysis');
             $this->writeManifestSummary($runId, $site['id'], $manifest, $t + ['elapsed'=>microtime(true)-$siteStart, 'message'=>'No file changes detected; skipped content analysis']);
-            return [$count, 0];
+            return [$count, $findings];
         }
 
         $a = microtime(true); $previousRows = $this->loadSnapshotMap($site['id']); $t['diff_time'] = microtime(true) - $a;
@@ -212,7 +235,7 @@ class ScannerService
 
         $a = microtime(true); $forced = $this->changedOnlyForcedHashes($site['path'], $options); $candidates=[];
         foreach (array_merge($new, $modified) as $e) if ($this->shouldScanFile($e['path'], $site['path'], $options)) $candidates[$e['path_hash']] = $e;
-        foreach ($files as $e) if (isset($forced[$e['path_hash']]) || (($options['paranoid'] ?? false) && $this->paranoidRecheckCandidate($e['path'], $e['relative_path']))) $candidates[$e['path_hash']] = $e;
+        foreach ($files as $e) if (isset($forced[$e['path_hash']]) || (($options['paranoid'] ?? false) && $this->paranoidRecheckCandidate($e['path'], $e['relative_path'])) || $this->cmsMismatchCandidate($site, $e['relative_path'])) $candidates[$e['path_hash']] = $e;
         $t['candidate_selection_time'] = microtime(true) - $a;
 
         $a = microtime(true); $scanned = 0;
@@ -593,6 +616,8 @@ class ScannerService
             }
         }
         if ($dle = $this->dleStructuralFinding($site, $path, $relative, $content)) $out[] = $dle;
+        if ($mismatch = $this->cmsMismatchFinding($site, $relative)) $out[] = $mismatch;
+        if ($joomlaIndex = $this->joomlaRootIndexFinding($site, $relative, $content)) $out[] = $joomlaIndex;
         if ($this->isValidationPath($path) && ($isPhp || $this->isWebConfig($path))) {
             $risk = $allowed ? 'low' : ($this->fakeWellKnownPath($path) || $isPhp ? 'critical' : 'high');
             $out[] = ['risk'=>$risk,'type'=>'validation_path_malware','rule_key'=>'validation-path-executable','title'=>'Executable or config file under validation directory','description'=>($this->fakeWellKnownPath($path)?'Fake well-known directory without leading dot is suspicious. ':'').'Validation/ACME paths should not contain PHP loaders or dangerous handlers.','matched'=>[], 'log_ids'=>$logIds];
@@ -653,6 +678,73 @@ class ScannerService
         if (!$reason) return null;
         if (preg_match('/eval\s*\(|base64_decode\s*\(|gz(inflate|uncompress)\s*\(|file_get_contents\s*\(\s*__FILE__/i', $content)) $risk = 'critical';
         return ['risk'=>$risk,'type'=>'cms_structure','rule_key'=>'dle-structural-warning','title'=>'DataLife Engine structural warning','description'=>$reason,'matched'=>[['name'=>'dle-structure','risk'=>$risk,'pattern'=>$reason,'snippet'=>$rel]], 'log_ids'=>$this->relatedLogEventIds($path, $site['id'] ?? null)];
+    }
+
+    /**
+     * A site's detected CMS having another CMS's own distinctive files/directories present is a
+     * near-zero-false-positive compromise indicator -- a legitimate site is never ALSO a stock
+     * install of a different CMS. Usually a secondary webshell/backdoor family dropped wholesale,
+     * or (rarer, lower confidence but still worth a human look) a leftover from a botched
+     * migration. Deliberately has no allowlist/suppression path: real incidents (europharm) showed
+     * this exact structure sitting in plain sight, visible from a single `ls`, with no caveat that
+     * would have made it worth ignoring.
+     */
+    private function cmsMismatchFinding(array $site, string $relative): ?array
+    {
+        $cms = $site['cms_type'] ?? '';
+        [$other, $rel] = $this->cmsMismatchOther($cms, $relative);
+        if ($other === null) return null;
+        $label = ucfirst($cms);
+        return ['risk'=>'critical','type'=>'cms_structure','rule_key'=>'cms-mismatch','title'=>"CMS mismatch: {$other} structure on a {$label} site",'description'=>"This site's detected CMS is {$label}, but this path matches {$other}'s own distinctive structure. A legitimate site is never also a stock install of a different CMS -- almost always a secondary CMS/webshell family dropped by an attacker, or (less likely) debris from an incomplete migration.",'matched'=>[['name'=>'cms-mismatch','risk'=>'critical','pattern'=>"{$other} structure on {$cms}",'snippet'=>$rel]], 'log_ids'=>[]];
+    }
+
+    /** @return array{0:?string,1:string} [other CMS's label, or null; normalized relative path] */
+    private function cmsMismatchOther(string $cms, string $relative): array
+    {
+        $rel = str_replace('\\', '/', ltrim($relative, '/'));
+        $other = match ($cms) {
+            'joomla' => preg_match('#^wp-includes(/|$)#i', $rel) || preg_match('#^wp-config.*\.php$#i', $rel) ? 'WordPress' : null,
+            'wordpress' => preg_match('#^administrator(/|$)#i', $rel) || preg_match('#^libraries/joomla(/|$)#i', $rel) ? 'Joomla' : null,
+            default => null,
+        };
+        return [$other, $rel];
+    }
+    /** Used to force a changed_only scan to recheck a CMS-mismatch path on every run, even when
+     *  its metadata hasn't changed -- a mismatch that's been sitting there untouched for several
+     *  scans (the common case: most compromises are found well after the fact, not live) must
+     *  still surface, not just a freshly-dropped one. */
+    private function cmsMismatchCandidate(array $site, string $relative): bool { return $this->cmsMismatchOther($site['cms_type'] ?? '', $relative)[0] !== null; }
+
+    /**
+     * Joomla's own root index.php is a tiny, fixed-shape bootstrap -- a _JEXEC guard, a handful of
+     * define()/const/use statements, and one require(_once) of the framework entry point. Nothing
+     * else belongs there. Checked by stripping every KNOWN-safe construct out of the file and
+     * seeing what's left, rather than a size threshold or a blacklist of dangerous-looking
+     * functions: a size check alone was tried first and then abandoned after a false positive on a
+     * legitimately customized bootstrap on one site, which cost two others (a webshell appended to
+     * an otherwise-stock, still-small file slipped under the size bar on both). An allowlist of the
+     * handful of statements Joomla's bootstrap can legitimately contain has no such blind spot --
+     * anything else, of any size, is by definition not supposed to be there.
+     */
+    private function joomlaRootIndexFinding(array $site, string $relative, string $content): ?array
+    {
+        if (($site['cms_type'] ?? '') !== 'joomla') return null;
+        if (strtolower(str_replace('\\', '/', ltrim($relative, '/'))) !== 'index.php') return null;
+        if (trim($content) === '') return null;
+        $cleaned = $content;
+        $cleaned = preg_replace('#/\*.*?\*/#s', '', $cleaned);
+        $cleaned = preg_replace('#(?<!["\'])//[^\n]*#', '', $cleaned);
+        $cleaned = str_replace(['<?php', '<?', '?>'], '', $cleaned);
+        foreach ([
+            '/defined\s*\(\s*[\'"]_JEXEC[\'"]\s*\)\s*(or|\|\|)\s*die\s*(\([^)]*\))?\s*;/i',
+            '/define\s*\(\s*[\'"][A-Z0-9_]+[\'"]\s*,[^;]*\)\s*;/i',
+            '/const\s+[A-Z0-9_]+\s*=[^;]*;/i',
+            '/require(_once)?\s*[^;]*;/i',
+            '/use\s+[\\\\A-Za-z0-9_]+(\s+as\s+[A-Za-z0-9_]+)?\s*;/i',
+        ] as $safe) $cleaned = preg_replace($safe, '', $cleaned);
+        $cleaned = trim($cleaned);
+        if ($cleaned === '') return null;
+        return ['risk'=>'critical','type'=>'cms_integrity','rule_key'=>'joomla-root-index-tampered','title'=>'Joomla root index.php contains unexpected code','description'=>'Stock Joomla root index.php only defines constants and requires the framework bootstrap (plus an optional _JEXEC guard and use statements). This file has additional code outside that shape.','matched'=>[['name'=>'joomla-index-structure','risk'=>'critical','pattern'=>'unexpected statement in Joomla root index.php','snippet'=>mb_substr($cleaned, 0, 300)]], 'log_ids'=>[]];
     }
 
     private function isSeoScannable(string $path): bool { return (bool)preg_match('/\.(php|html?|txt)$/i', $path); }
